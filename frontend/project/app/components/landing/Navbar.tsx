@@ -19,7 +19,7 @@ export default function Navbar() {
               <Video className="w-6 h-6 text-white" />
             </div>
             <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
-              Meet AI
+              Standby
             </span>
           </div>
 

@@ -1,10 +1,18 @@
-# Video Calling Application - Startup Script (Windows)
-# Run this to start all services at once
+# =============================================================================
+# Video Calling Application - Multi-Window Startup Script
+# =============================================================================
+# This script opens separate windows for each service
+# For unified single-window startup, use: .\start-all.ps1
+# =============================================================================
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Video Calling Application - Start" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
+
+# Set working directory
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $scriptDir
 
 # Check Docker
 $dockerRunning = docker ps 2>$null
@@ -32,15 +40,21 @@ if ($livekitRunning -eq "livekit") {
 Start-Sleep -Seconds 2
 Write-Host ""
 
-# Start Node Backend
-Write-Host "Starting Node Backend..." -ForegroundColor Blue
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'backend\node server'; Write-Host '===========================================' -ForegroundColor Green; Write-Host '  Node.js Backend (Port 3001)' -ForegroundColor Green; Write-Host '===========================================' -ForegroundColor Green; npm run dev"
+# Start Node Backend (new window)
+Write-Host "Starting Node Backend (new window)..." -ForegroundColor Blue
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$scriptDir\backend\node server'; Write-Host '===========================================`n  Node.js Backend (Port 3001)`n===========================================' -ForegroundColor Green; npm run dev"
 
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 2
 
-# Start Frontend
-Write-Host "Starting Frontend..." -ForegroundColor Blue
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'frontend\project'; Write-Host '===========================================' -ForegroundColor Magenta; Write-Host '  Frontend (Port 3000)' -ForegroundColor Magenta; Write-Host '===========================================' -ForegroundColor Magenta; npm run dev"
+# Start Python Backend (new window)
+Write-Host "Starting Python Backend (new window)..." -ForegroundColor Magenta
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$scriptDir\backend\python server'; Write-Host '===========================================`n  Python Backend (Port 5000)`n===========================================' -ForegroundColor Magenta; python app.py"
+
+Start-Sleep -Seconds 2
+
+# Start Frontend (new window)
+Write-Host "Starting Frontend (new window)..." -ForegroundColor Cyan
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$scriptDir\frontend\project'; Write-Host '===========================================`n  Frontend (Port 3000)`n===========================================' -ForegroundColor Cyan; npm run dev"
 
 Start-Sleep -Seconds 2
 Write-Host ""
@@ -51,15 +65,11 @@ Write-Host ""
 Write-Host "Open: http://localhost:3000" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Services:" -ForegroundColor Gray
-Write-Host "  Frontend:  http://localhost:3000" -ForegroundColor Gray
-Write-Host "  Backend:   http://localhost:3001" -ForegroundColor Gray
-Write-Host "  LiveKit:   ws://localhost:7880" -ForegroundColor Gray
+Write-Host "  Frontend:        http://localhost:3000" -ForegroundColor Gray
+Write-Host "  Node Backend:    http://localhost:3001" -ForegroundColor Gray
+Write-Host "  Python Backend:  http://localhost:5000" -ForegroundColor Gray
+Write-Host "  Python API Docs: http://localhost:5000/docs" -ForegroundColor Gray
+Write-Host "  LiveKit:         ws://localhost:7880" -ForegroundColor Gray
 Write-Host ""
-Write-Host "Press Ctrl+C to exit this script" -ForegroundColor DarkGray
-Write-Host "Services will continue running in other windows" -ForegroundColor DarkGray
+Write-Host "Tip: Use .\start-all.ps1 for single-window startup" -ForegroundColor DarkGray
 Write-Host ""
-
-# Keep script running
-while ($true) {
-    Start-Sleep -Seconds 10
-}

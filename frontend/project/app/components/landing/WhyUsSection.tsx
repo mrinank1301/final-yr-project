@@ -38,7 +38,7 @@ export default function WhyUsSection() {
             transition={{ duration: 0.6 }}
           >
             <h2 className="text-4xl font-bold text-gray-900 mb-6">
-              Why choose Meet AI?
+              Why choose Standby AI?
             </h2>
             <p className="text-lg text-gray-600 mb-8 leading-relaxed">
               We've rebuilt video conferencing from the ground up, integrating cutting-edge AI 

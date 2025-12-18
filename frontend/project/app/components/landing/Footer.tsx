@@ -13,7 +13,7 @@ export default function Footer() {
               <div className="bg-blue-600 p-2 rounded-lg">
                 <Video className="w-6 h-6 text-white" />
               </div>
-              <span className="text-xl font-bold">Meet AI</span>
+              <span className="text-xl font-bold">Standby AI</span>
             </div>
             <p className="text-gray-400 max-w-sm">
               The world's most advanced AI-powered video calling platform. 
@@ -44,7 +44,7 @@ export default function Footer() {
 
         <div className="border-t border-gray-800 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
           <p className="text-gray-500 text-sm">
-            © 2024 Meet AI. All rights reserved.
+            © 2024 Standby AI. All rights reserved.
           </p>
           <div className="flex gap-6">
             <a href="#" className="text-gray-400 hover:text-white transition-colors">

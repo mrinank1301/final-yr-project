@@ -24,7 +24,7 @@ export default function ContactSection() {
                 </div>
                 <div>
                   <div className="font-bold text-gray-900">Email Us</div>
-                  <div className="text-gray-600">support@meetai.com</div>
+                  <div className="text-gray-600">support@Standbyai.com</div>
                 </div>
               </div>
               <div className="flex items-center gap-4">

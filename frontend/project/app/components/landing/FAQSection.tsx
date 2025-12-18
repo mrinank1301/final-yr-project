@@ -6,8 +6,8 @@ import { Plus, Minus } from "lucide-react";
 
 const faqs = [
   {
-    question: "Is Meet AI really free?",
-    answer: "Yes! Meet AI is completely free for up to 100 participants per meeting. We believe in democratizing access to advanced communication tools."
+    question: "Is Standby AI really free?",
+    answer: "Yes! Standby AI is completely free for up to 100 participants per meeting. We believe in democratizing access to advanced communication tools."
   },
   {
     question: "How does the AI summarization work?",
@@ -19,7 +19,7 @@ const faqs = [
   },
   {
     question: "Do I need to install any software?",
-    answer: "No installation required! Meet AI works directly in your modern web browser. Just share the link and start meeting."
+    answer: "No installation required! Standby AI works directly in your modern web browser. Just share the link and start meeting."
   },
   {
     question: "What languages does the translation support?",
