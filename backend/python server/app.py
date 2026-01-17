@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 # Import configuration
-from config import PORT, LIVEKIT_URL, GEMINI_API_KEY
+from config import PORT, LIVEKIT_URL, GEMINI_API_KEY, AZURE_SPEECH_KEY, GROQ_API_KEY
 
 # Import models for health check
 from models import HealthResponse
@@ -103,18 +103,23 @@ async def root():
     """Root endpoint with API information"""
     return {
         "name": "Video Calling AI Server",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "framework": "FastAPI",
         "features": [
-            "Gemini AI Chat",
-            "Audio Transcription",
-            "Meeting Listening",
+            "Azure Speech-to-Text (Accurate STT)",
+            "Groq AI (Ultra-fast LLM)",
+            "Gemini AI Chat (Fallback)",
+            "Meeting Listening & Auto-Answer",
             "Question Detection",
-            "Sentiment Analysis",
-            "Meeting Summaries",
+            "Interview Assistance",
             "Collaborative Code Editor",
             "Code Execution"
         ],
+        "services": {
+            "azure_stt": "Configured" if AZURE_SPEECH_KEY else "Not configured",
+            "groq_ai": "Configured" if GROQ_API_KEY else "Not configured",
+            "gemini_ai": "Configured" if GEMINI_API_KEY else "Not configured"
+        },
         "docs": "/docs",
         "redoc": "/redoc"
     }
@@ -124,11 +129,17 @@ async def root():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Video Calling AI Server")
+    print("Video Calling AI Server v2.0")
+    print("Azure STT + Groq AI for Ultra-Fast Responses")
     print("=" * 60)
     print(f"Server URL: http://localhost:{PORT}")
     print(f"LiveKit URL: {LIVEKIT_URL or 'Not configured'}")
-    print(f"Gemini API: {'Configured' if GEMINI_API_KEY else 'Not configured - set GEMINI_API_KEY'}")
+    print("-" * 60)
+    print("AI Services Status:")
+    print(f"  Azure STT: {'[OK] Configured' if AZURE_SPEECH_KEY else '[X] Not configured'}")
+    print(f"  Groq AI:   {'[OK] Configured' if GROQ_API_KEY else '[X] Not configured - set GROQ_API_KEY'}")
+    print(f"  Gemini AI: {'[OK] Configured (fallback)' if GEMINI_API_KEY else '[!] Not configured'}")
+    print("-" * 60)
     print(f"API Docs: http://localhost:{PORT}/docs")
     print(f"ReDoc: http://localhost:{PORT}/redoc")
     print("=" * 60)

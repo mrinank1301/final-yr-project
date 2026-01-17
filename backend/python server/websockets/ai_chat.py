@@ -1,15 +1,46 @@
 """
-AI Chat WebSocket - Real-time AI chat with audio support
+AI Chat WebSocket - Real-time AI chat with Groq AI for ultra-fast responses
 """
 import base64
-from typing import Dict, List
+import time
+from typing import Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from services.ai_service import (
     is_question,
-    process_text_with_gemini,
-    transcribe_audio_with_gemini
+    transcribe_audio,
+    process_message,
+    translate_text
 )
+
+
+def is_similar_text(text1: str, text2: str, threshold: float = 0.7) -> bool:
+    """Check if two texts are similar (to avoid duplicate responses)"""
+    if not text1 or not text2:
+        return False
+    
+    t1 = text1.lower().strip()
+    t2 = text2.lower().strip()
+    
+    # Exact match
+    if t1 == t2:
+        return True
+    
+    # One contains the other
+    if t1 in t2 or t2 in t1:
+        return True
+    
+    # Simple word overlap check
+    words1 = set(t1.split())
+    words2 = set(t2.split())
+    
+    if not words1 or not words2:
+        return False
+    
+    overlap = len(words1 & words2)
+    total = max(len(words1), len(words2))
+    
+    return (overlap / total) >= threshold
 
 
 class ChatConnectionManager:
@@ -20,6 +51,17 @@ class ChatConnectionManager:
         self.chat_histories: Dict[str, List[dict]] = {}
         self.meeting_contexts: Dict[str, List[str]] = {}
         self.listening_status: Dict[str, bool] = {}
+        # Deduplication: track last transcription and response time
+        self.last_transcription: Dict[str, str] = {}
+        self.last_response_time: Dict[str, float] = {}
+        self.response_cooldown = 5.0  # seconds between responses
+        
+        # Live Transcription mode
+        self.transcription_status: Dict[str, bool] = {}
+        
+        # Live Translation mode
+        self.translation_status: Dict[str, bool] = {}
+        self.translation_target: Dict[str, str] = {}  # Target language code
     
     def connect(self, client_id: str, websocket: WebSocket):
         """Register a new connection"""
@@ -27,17 +69,21 @@ class ChatConnectionManager:
         self.chat_histories[client_id] = []
         self.meeting_contexts[client_id] = []
         self.listening_status[client_id] = False
+        self.last_transcription[client_id] = ""
+        self.last_response_time[client_id] = 0
+        self.transcription_status[client_id] = False
+        self.translation_status[client_id] = False
+        self.translation_target[client_id] = ""
     
     def disconnect(self, client_id: str):
         """Clean up on disconnect"""
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-        if client_id in self.chat_histories:
-            del self.chat_histories[client_id]
-        if client_id in self.meeting_contexts:
-            del self.meeting_contexts[client_id]
-        if client_id in self.listening_status:
-            del self.listening_status[client_id]
+        for store in [self.active_connections, self.chat_histories, 
+                      self.meeting_contexts, self.listening_status,
+                      self.last_transcription, self.last_response_time,
+                      self.transcription_status, self.translation_status,
+                      self.translation_target]:
+            if client_id in store:
+                del store[client_id]
     
     def add_to_history(self, client_id: str, role: str, content: str):
         """Add message to chat history"""
@@ -51,83 +97,131 @@ class ChatConnectionManager:
         """Add transcription to meeting context"""
         if client_id in self.meeting_contexts:
             self.meeting_contexts[client_id].append(transcription)
-            # Keep only last 50 transcriptions
             if len(self.meeting_contexts[client_id]) > 50:
                 self.meeting_contexts[client_id] = self.meeting_contexts[client_id][-50:]
+    
+    def should_respond(self, client_id: str, transcription: str) -> bool:
+        """Check if we should respond to this transcription (deduplication)"""
+        now = time.time()
+        
+        # Check cooldown
+        last_time = self.last_response_time.get(client_id, 0)
+        if now - last_time < self.response_cooldown:
+            print(f"[AI] Cooldown active, skipping response ({self.response_cooldown - (now - last_time):.1f}s remaining)")
+            return False
+        
+        # Check if similar to last transcription
+        last_text = self.last_transcription.get(client_id, "")
+        if is_similar_text(transcription, last_text):
+            print(f"[AI] Similar to previous transcription, skipping")
+            return False
+        
+        return True
+    
+    def mark_responded(self, client_id: str, transcription: str):
+        """Mark that we responded to this transcription"""
+        self.last_transcription[client_id] = transcription
+        self.last_response_time[client_id] = time.time()
 
 
 # Global connection manager instance
 chat_manager = ChatConnectionManager()
 
 
-async def analyze_and_respond_to_question(
+async def generate_response_for_speech(
     transcription: str,
     client_id: str,
     websocket: WebSocket
 ) -> bool:
-    """Analyze transcription for questions and respond if found"""
+    """Generate AI response for transcribed speech from meeting"""
     if not transcription or len(transcription.strip()) < 5:
         return False
     
-    if is_question(transcription):
-        print(f"Question detected: {transcription}")
-        
-        # Notify about detected question
-        await websocket.send_json({
-            "type": "question_detected",
-            "question": transcription
-        })
-        
-        # Send typing indicator
-        await websocket.send_json({
-            "type": "typing",
-            "status": True
-        })
-        
-        # Get meeting context
-        context = chat_manager.meeting_contexts.get(client_id, [])
-        
-        # Prepare question with context
-        question_prompt = f"Someone in the meeting asked: \"{transcription}\"\n\nPlease provide a helpful, concise answer to this question."
-        
-        # Get AI response
-        response = await process_text_with_gemini(
-            question_prompt,
-            chat_manager.chat_histories.get(client_id, []),
-            context
-        )
-        
-        # Add to chat history
-        chat_manager.add_to_history(client_id, "user", f"[Meeting Question] {transcription}")
-        chat_manager.add_to_history(client_id, "assistant", response)
-        
-        # Send response
-        await websocket.send_json({
-            "type": "typing",
-            "status": False
-        })
-        
-        await websocket.send_json({
-            "type": "message",
-            "role": "assistant",
-            "content": f"📝 **Answer to the question:**\n\n{response}"
-        })
-        
-        return True
+    # Check for deduplication
+    if not chat_manager.should_respond(client_id, transcription):
+        return False
     
-    return False
+    print(f"[AI] Processing speech: {transcription}")
+    
+    # Determine if it's a question or statement
+    is_q = is_question(transcription)
+    
+    # Send notification about what was heard
+    await websocket.send_json({
+        "type": "question_detected" if is_q else "speech_detected",
+        "question": transcription
+    })
+    
+    # Send typing indicator
+    await websocket.send_json({
+        "type": "typing",
+        "status": True
+    })
+    
+    # Get meeting context
+    context = chat_manager.meeting_contexts.get(client_id, [])
+    
+    # Prepare prompt based on what was said
+    if is_q:
+        prompt = f"""The interviewer/other person asked: "{transcription}"
+
+Provide a professional, helpful answer that the user can read and respond with.
+Keep it concise but complete. If it's an interview question, give a strong answer."""
+    else:
+        prompt = f"""The interviewer/other person said: "{transcription}"
+
+Based on what they said, provide a helpful response or suggestion that the user can use.
+If they made a statement, provide a relevant reply or talking point.
+Keep it concise and professional."""
+    
+    # Get AI response using Groq (ultra-fast)
+    response = await process_message(
+        prompt,
+        chat_manager.chat_histories.get(client_id, []),
+        context
+    )
+    
+    # Add to chat history
+    chat_manager.add_to_history(client_id, "user", f"[Meeting] {transcription}")
+    chat_manager.add_to_history(client_id, "assistant", response)
+    
+    # Mark as responded (for deduplication)
+    chat_manager.mark_responded(client_id, transcription)
+    
+    # Send response
+    await websocket.send_json({
+        "type": "typing",
+        "status": False
+    })
+    
+    label = "Answer" if is_q else "Suggested Response"
+    await websocket.send_json({
+        "type": "message",
+        "role": "assistant",
+        "content": f"**{label}:**\n\n{response}"
+    })
+    
+    return True
 
 
 async def websocket_ai_chat(websocket: WebSocket, client_id: str):
     """
     WebSocket endpoint for real-time AI chat with audio support
     
+    Uses Groq AI for ultra-fast LLM responses and Whisper for transcription
+    
     Message types:
     - text: {"type": "text", "content": "user message"}
     - audio: {"type": "audio", "data": "base64_encoded_audio"}
     - meeting_audio: {"type": "meeting_audio", "data": "base64_encoded_audio"}
+    - live_transcription_audio: {"type": "live_transcription_audio", "data": "base64"}
+    - live_translation_audio: {"type": "live_translation_audio", "data": "base64", "target_language": "es"}
     - start_listening: {"type": "start_listening"}
     - stop_listening: {"type": "stop_listening"}
+    - start_transcription: {"type": "start_transcription"}
+    - stop_transcription: {"type": "stop_transcription"}
+    - start_translation: {"type": "start_translation", "target_language": "es"}
+    - stop_translation: {"type": "stop_translation"}
     - clear: {"type": "clear"} - Clear chat history
     """
     await websocket.accept()
@@ -137,7 +231,7 @@ async def websocket_ai_chat(websocket: WebSocket, client_id: str):
     await websocket.send_json({
         "type": "message",
         "role": "assistant",
-        "content": "Hello! I'm your AI meeting assistant. I can listen to your meeting and automatically answer questions. Click 'Listen to Meeting' to get started, or type/speak your questions directly!"
+        "content": "**Meeting Assistant Ready!**\n\nChoose a feature:\n\n- 🎧 **AI Assistant** - AI answers questions\n- 📝 **Live Transcription** - Speech to text\n- 🌐 **Live Translation** - Real-time translation"
     })
     
     try:
@@ -154,12 +248,26 @@ async def websocket_ai_chat(websocket: WebSocket, client_id: str):
             elif msg_type == "meeting_audio":
                 await _handle_meeting_audio(data, client_id, websocket)
                 
+            elif msg_type == "live_transcription_audio":
+                await _handle_live_transcription(data, client_id, websocket)
+                
+            elif msg_type == "live_translation_audio":
+                await _handle_live_translation(data, client_id, websocket)
+                
+            # ========== AI Assistant Mode ==========
             elif msg_type == "start_listening":
+                # Stop other modes
+                chat_manager.transcription_status[client_id] = False
+                chat_manager.translation_status[client_id] = False
                 chat_manager.listening_status[client_id] = True
+                # Reset deduplication on start
+                chat_manager.last_transcription[client_id] = ""
+                chat_manager.last_response_time[client_id] = 0
                 await websocket.send_json({
                     "type": "status",
                     "status": "listening"
                 })
+                print(f"[AI] Client {client_id} started AI assistant mode")
                 
             elif msg_type == "stop_listening":
                 chat_manager.listening_status[client_id] = False
@@ -167,10 +275,56 @@ async def websocket_ai_chat(websocket: WebSocket, client_id: str):
                     "type": "status",
                     "status": "stopped"
                 })
+                print(f"[AI] Client {client_id} stopped AI assistant")
+            
+            # ========== Live Transcription Mode ==========
+            elif msg_type == "start_transcription":
+                # Stop other modes
+                chat_manager.listening_status[client_id] = False
+                chat_manager.translation_status[client_id] = False
+                chat_manager.transcription_status[client_id] = True
+                chat_manager.last_transcription[client_id] = ""
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "transcribing"
+                })
+                print(f"[Transcription] Client {client_id} started live transcription")
+                
+            elif msg_type == "stop_transcription":
+                chat_manager.transcription_status[client_id] = False
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "stopped"
+                })
+                print(f"[Transcription] Client {client_id} stopped transcription")
+            
+            # ========== Live Translation Mode ==========
+            elif msg_type == "start_translation":
+                # Stop other modes
+                chat_manager.listening_status[client_id] = False
+                chat_manager.transcription_status[client_id] = False
+                chat_manager.translation_status[client_id] = True
+                chat_manager.translation_target[client_id] = data.get("target_language", "en")
+                chat_manager.last_transcription[client_id] = ""
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "translating"
+                })
+                print(f"[Translation] Client {client_id} started translation to {data.get('target_language', 'en')}")
+                
+            elif msg_type == "stop_translation":
+                chat_manager.translation_status[client_id] = False
+                chat_manager.translation_target[client_id] = ""
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "stopped"
+                })
+                print(f"[Translation] Client {client_id} stopped translation")
                 
             elif msg_type == "clear":
                 chat_manager.chat_histories[client_id] = []
                 chat_manager.meeting_contexts[client_id] = []
+                chat_manager.last_transcription[client_id] = ""
                 await websocket.send_json({
                     "type": "cleared",
                     "content": "Chat history cleared"
@@ -199,8 +353,8 @@ async def _handle_text_message(data: dict, client_id: str, websocket: WebSocket)
         "status": True
     })
     
-    # Get AI response with meeting context
-    response = await process_text_with_gemini(
+    # Get AI response with meeting context using Groq
+    response = await process_message(
         user_message,
         chat_manager.chat_histories[client_id],
         chat_manager.meeting_contexts.get(client_id, [])
@@ -231,6 +385,7 @@ async def _handle_audio_message(data: dict, client_id: str, websocket: WebSocket
     try:
         # Decode audio
         audio_data = base64.b64decode(audio_base64)
+        print(f"[AI] Received personal audio: {len(audio_data)} bytes")
         
         # Send processing status
         await websocket.send_json({
@@ -239,7 +394,8 @@ async def _handle_audio_message(data: dict, client_id: str, websocket: WebSocket
         })
         
         # Transcribe audio
-        transcription = await transcribe_audio_with_gemini(audio_data)
+        transcription = await transcribe_audio(audio_data)
+        print(f"[AI] Personal audio transcription: {transcription}")
         
         if transcription:
             # Send transcription to user
@@ -257,8 +413,8 @@ async def _handle_audio_message(data: dict, client_id: str, websocket: WebSocket
                 "status": True
             })
             
-            # Get AI response
-            response = await process_text_with_gemini(
+            # Get AI response using Groq
+            response = await process_message(
                 transcription,
                 chat_manager.chat_histories[client_id],
                 chat_manager.meeting_contexts.get(client_id, [])
@@ -293,7 +449,7 @@ async def _handle_audio_message(data: dict, client_id: str, websocket: WebSocket
 
 
 async def _handle_meeting_audio(data: dict, client_id: str, websocket: WebSocket):
-    """Handle meeting audio (from other participants)"""
+    """Handle meeting audio (from other participants) - with deduplication"""
     if not chat_manager.listening_status.get(client_id, False):
         return
     
@@ -304,23 +460,116 @@ async def _handle_meeting_audio(data: dict, client_id: str, websocket: WebSocket
     try:
         # Decode audio
         audio_data = base64.b64decode(audio_base64)
+        print(f"[AI] Received meeting audio: {len(audio_data)} bytes")
         
         # Transcribe audio
-        transcription = await transcribe_audio_with_gemini(audio_data)
+        transcription = await transcribe_audio(audio_data)
         
-        if transcription and len(transcription.strip()) > 3:
-            # Add to meeting context
+        if transcription and len(transcription.strip()) > 5:
+            print(f"[AI] Meeting transcription: {transcription}")
+            
+            # Add to meeting context (always, for context awareness)
             chat_manager.add_to_context(client_id, transcription)
             
             # Send meeting transcription to user
             await websocket.send_json({
                 "type": "meeting_transcription",
                 "content": transcription,
-                "speaker": "Meeting"
+                "speaker": "Other Participant"
             })
             
-            # Check if it's a question and respond
-            await analyze_and_respond_to_question(transcription, client_id, websocket)
+            # Generate response (with deduplication check inside)
+            await generate_response_for_speech(transcription, client_id, websocket)
+        else:
+            print(f"[AI] No meaningful speech detected in meeting audio")
             
     except Exception as e:
         print(f"Error processing meeting audio: {e}")
+
+
+async def _handle_live_transcription(data: dict, client_id: str, websocket: WebSocket):
+    """Handle live transcription audio - transcription only, no AI response"""
+    if not chat_manager.transcription_status.get(client_id, False):
+        return
+    
+    audio_base64 = data.get("data", "")
+    if not audio_base64:
+        return
+    
+    try:
+        # Decode audio
+        audio_data = base64.b64decode(audio_base64)
+        print(f"[Transcription] Received audio: {len(audio_data)} bytes")
+        
+        # Transcribe audio
+        transcription = await transcribe_audio(audio_data)
+        
+        if transcription and len(transcription.strip()) > 3:
+            # Check for duplicate (avoid repeating same text)
+            last_text = chat_manager.last_transcription.get(client_id, "")
+            if is_similar_text(transcription, last_text, threshold=0.8):
+                print(f"[Transcription] Skipping duplicate: {transcription[:30]}...")
+                return
+            
+            chat_manager.last_transcription[client_id] = transcription
+            print(f"[Transcription] Result: {transcription}")
+            
+            # Send transcription to user (no AI response)
+            await websocket.send_json({
+                "type": "live_transcription",
+                "content": transcription,
+                "speaker": "Participant"
+            })
+        else:
+            print(f"[Transcription] No meaningful speech detected")
+            
+    except Exception as e:
+        print(f"[Transcription] Error: {e}")
+
+
+async def _handle_live_translation(data: dict, client_id: str, websocket: WebSocket):
+    """Handle live translation audio - transcribe and translate to target language"""
+    if not chat_manager.translation_status.get(client_id, False):
+        return
+    
+    audio_base64 = data.get("data", "")
+    target_language = data.get("target_language") or chat_manager.translation_target.get(client_id, "en")
+    
+    if not audio_base64:
+        return
+    
+    try:
+        # Decode audio
+        audio_data = base64.b64decode(audio_base64)
+        print(f"[Translation] Received audio: {len(audio_data)} bytes, target: {target_language}")
+        
+        # First transcribe the audio
+        transcription = await transcribe_audio(audio_data)
+        
+        if transcription and len(transcription.strip()) > 3:
+            # Check for duplicate
+            last_text = chat_manager.last_transcription.get(client_id, "")
+            if is_similar_text(transcription, last_text, threshold=0.8):
+                print(f"[Translation] Skipping duplicate: {transcription[:30]}...")
+                return
+            
+            chat_manager.last_transcription[client_id] = transcription
+            print(f"[Translation] Original: {transcription}")
+            
+            # Translate the transcription
+            translated = await translate_text(transcription, target_language)
+            print(f"[Translation] Translated: {translated}")
+            
+            # Send both original and translated to user
+            await websocket.send_json({
+                "type": "live_translation",
+                "original": transcription,
+                "translated": translated,
+                "target_language": target_language,
+                "speaker": "Participant"
+            })
+        else:
+            print(f"[Translation] No meaningful speech detected")
+            
+    except Exception as e:
+        print(f"[Translation] Error: {e}")

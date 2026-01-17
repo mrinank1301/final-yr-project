@@ -1,10 +1,10 @@
 """
-AI Router - Handles AI-related HTTP endpoints
+AI Router - Handles AI-related HTTP endpoints (now using Groq)
 """
 import base64
 from fastapi import APIRouter, HTTPException
 
-from config import GEMINI_API_KEY
+from config import GROQ_API_KEY
 from models import (
     TranscribeRequest, TranscribeResponse,
     SentimentRequest, SentimentResponse,
@@ -12,9 +12,8 @@ from models import (
     ChatRequest, ChatResponse
 )
 from services.ai_service import (
-    get_gemini_model,
-    process_text_with_gemini,
-    transcribe_audio_with_gemini
+    process_message,
+    transcribe_audio
 )
 
 router = APIRouter(prefix="/api", tags=["AI"])
@@ -29,14 +28,14 @@ async def chat_with_ai(request: ChatRequest):
     - **context**: Optional meeting context
     """
     try:
-        if not GEMINI_API_KEY:
-            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="Groq API key not configured")
         
         full_message = request.message
         if request.context:
             full_message = f"Meeting context: {request.context}\n\nUser question: {request.message}"
         
-        response = await process_text_with_gemini(full_message)
+        response = await process_message(full_message)
         
         return {
             "response": response,
@@ -47,19 +46,19 @@ async def chat_with_ai(request: ChatRequest):
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)
-async def transcribe_audio(request: TranscribeRequest):
+async def transcribe_audio_endpoint(request: TranscribeRequest):
     """
-    Endpoint for real-time transcription
+    Endpoint for real-time transcription using Groq Whisper
     
     - **audio**: Base64 encoded audio data
     - **language**: Language code (default: en)
     """
     try:
-        if not GEMINI_API_KEY:
-            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="Groq API key not configured")
         
         audio_data = base64.b64decode(request.audio)
-        transcription = await transcribe_audio_with_gemini(audio_data)
+        transcription = await transcribe_audio(audio_data)
         
         return {
             "message": "Transcription successful",
@@ -80,17 +79,18 @@ async def analyze_sentiment(request: SentimentRequest):
     - **text**: Text to analyze for sentiment
     """
     try:
-        if not GEMINI_API_KEY:
-            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="Groq API key not configured")
         
-        model = get_gemini_model()
-        response = model.generate_content(
-            f"Analyze the sentiment of this text and respond with ONLY one word (positive/negative/neutral) and a confidence score from 0 to 1. Format: sentiment,score\n\nText: {request.text}"
-        )
+        prompt = f"Analyze the sentiment of this text and respond with ONLY one word (positive/negative/neutral) and a confidence score from 0 to 1. Format: sentiment,score\n\nText: {request.text}"
+        response = await process_message(prompt)
         
-        result = response.text.strip().lower().split(",")
+        result = response.strip().lower().split(",")
         sentiment = result[0] if len(result) > 0 else "neutral"
-        score = float(result[1]) if len(result) > 1 else 0.5
+        try:
+            score = float(result[1]) if len(result) > 1 else 0.5
+        except:
+            score = 0.5
         
         return {
             "message": "Sentiment analysis completed",
@@ -111,18 +111,16 @@ async def generate_summary(request: SummaryRequest):
     - **max_length**: Maximum length of summary (default: 200)
     """
     try:
-        if not GEMINI_API_KEY:
-            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="Groq API key not configured")
         
-        model = get_gemini_model()
-        response = model.generate_content(
-            f"Summarize this meeting transcript in about {request.max_length} words. Include key points, decisions made, and action items:\n\n{request.transcript}"
-        )
+        prompt = f"Summarize this meeting transcript in about {request.max_length} words. Include key points, decisions made, and action items:\n\n{request.transcript}"
+        response = await process_message(prompt)
         
         return {
             "message": "Summary generated successfully",
             "transcript_length": len(request.transcript),
-            "summary": response.text
+            "summary": response
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
