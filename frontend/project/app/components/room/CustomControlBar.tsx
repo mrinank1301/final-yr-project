@@ -10,6 +10,7 @@ import {
   Bot,
   PhoneOff,
   Code2,
+  FileText,
 } from "lucide-react";
 import { useState } from "react";
 import { ControlButton } from "./ControlButton";
@@ -17,7 +18,7 @@ import { DeviceMenu } from "./DeviceMenu";
 
 interface CustomControlBarProps {
   activeSidebar: string;
-  onToggleSidebar: (sidebar: "chat" | "participants" | "ai" | "code") => void;
+  onToggleSidebar: (sidebar: "chat" | "participants" | "ai" | "code" | "transcription") => void;
 }
 
 export function CustomControlBar({
@@ -124,6 +125,15 @@ export function CustomControlBar({
           inactiveClass="bg-gray-800 text-gray-300 hover:bg-gray-700"
         >
           <Bot className="w-5 h-5" />
+        </ControlButton>
+
+        <ControlButton
+          onClick={() => onToggleSidebar("transcription")}
+          isActive={activeSidebar === "transcription"}
+          activeClass="bg-amber-500 text-white hover:bg-amber-600"
+          inactiveClass="bg-gray-800 text-gray-300 hover:bg-gray-700"
+        >
+          <FileText className="w-5 h-5" />
         </ControlButton>
 
         <ControlButton

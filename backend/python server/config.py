@@ -24,13 +24,12 @@ AZURE_SPEECH_REGION = os.getenv('AZURE_SPEECH_REGION', 'eastasia')
 # ==================== Groq AI Configuration ====================
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 
-# Available Groq models for chat (ultra-fast inference)
+# Available Groq models for chat (ultra-fast inference) - Updated Jan 2026
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",   # Latest, best quality
-    "llama3-70b-8192",           # Fallback
+    "llama-3.1-70b-versatile",   # Fallback
     "llama-3.1-8b-instant",      # Ultra fast
-    "llama3-8b-8192",            # Fallback fast model
-    "mixtral-8x7b-32768",        # Good for longer context
+    "gemma2-9b-it",              # Good alternative
 ]
 
 # AI System Instruction

@@ -15,6 +15,7 @@ import { AISidebar } from "./AISidebar";
 import { ParticipantList } from "./ParticipantList";
 import { CustomControlBar } from "./CustomControlBar";
 import { CodeEditorSidebar } from "./CodeEditorSidebar";
+import { TranscriptionSidebar } from "./TranscriptionSidebar";
 
 // Message types for code editor synchronization
 interface CodeEditorMessage {
@@ -37,7 +38,7 @@ export function VideoConferenceComponent() {
   const roomId = room?.name || "default-room";
 
   const [activeSidebar, setActiveSidebar] = useState<
-    "none" | "chat" | "participants" | "ai" | "code"
+    "none" | "chat" | "participants" | "ai" | "code" | "transcription"
   >("none");
   const [isCodeEditorFullScreen, setIsCodeEditorFullScreen] = useState(false);
   const [codeEditorStartedBy, setCodeEditorStartedBy] = useState<string | null>(null);
@@ -93,7 +94,7 @@ export function VideoConferenceComponent() {
     };
   }, [room]);
 
-  const toggleSidebar = (sidebar: "chat" | "participants" | "ai" | "code") => {
+  const toggleSidebar = (sidebar: "chat" | "participants" | "ai" | "code" | "transcription") => {
     if (sidebar === "code") {
       if (activeSidebar !== "code") {
         // Opening code editor - broadcast to all
@@ -192,6 +193,9 @@ export function VideoConferenceComponent() {
                   onToggleFullScreen={toggleCodeEditorFullScreen}
                   startedBy={codeEditorStartedBy}
                 />
+              )}
+              {activeSidebar === "transcription" && (
+                <TranscriptionSidebar onClose={() => setActiveSidebar("none")} />
               )}
             </motion.div>
           )}

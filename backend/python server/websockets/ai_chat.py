@@ -10,7 +10,8 @@ from services.ai_service import (
     is_question,
     transcribe_audio,
     process_message,
-    translate_text
+    translate_text,
+    translate_and_speak
 )
 
 
@@ -528,7 +529,7 @@ async def _handle_live_transcription(data: dict, client_id: str, websocket: WebS
 
 
 async def _handle_live_translation(data: dict, client_id: str, websocket: WebSocket):
-    """Handle live translation audio - transcribe and translate to target language"""
+    """Handle live translation audio - transcribe, translate, and speak in target language"""
     if not chat_manager.translation_status.get(client_id, False):
         return
     
@@ -556,18 +557,27 @@ async def _handle_live_translation(data: dict, client_id: str, websocket: WebSoc
             chat_manager.last_transcription[client_id] = transcription
             print(f"[Translation] Original: {transcription}")
             
-            # Translate the transcription
-            translated = await translate_text(transcription, target_language)
+            # Translate and convert to speech
+            translated, audio_bytes = await translate_and_speak(transcription, target_language)
             print(f"[Translation] Translated: {translated}")
             
-            # Send both original and translated to user
-            await websocket.send_json({
+            # Prepare response with audio if available
+            response_data = {
                 "type": "live_translation",
                 "original": transcription,
                 "translated": translated,
                 "target_language": target_language,
-                "speaker": "Participant"
-            })
+                "speaker": "Participant",
+                "has_audio": audio_bytes is not None
+            }
+            
+            # Add base64 encoded audio if available
+            if audio_bytes:
+                response_data["audio"] = base64.b64encode(audio_bytes).decode('utf-8')
+                print(f"[Translation] Audio generated: {len(audio_bytes)} bytes")
+            
+            # Send to client
+            await websocket.send_json(response_data)
         else:
             print(f"[Translation] No meaningful speech detected")
             

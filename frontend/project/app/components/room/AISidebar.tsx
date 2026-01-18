@@ -1,13 +1,13 @@
 "use client";
 
-import { Bot, X, Send, Mic, MicOff, Loader2, Volume2, Radio, Headphones, Languages, FileText } from "lucide-react";
+import { Bot, X, Send, Mic, MicOff, Loader2, Volume2, VolumeX, Radio, Headphones, Languages } from "lucide-react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRemoteParticipants } from "@livekit/components-react";
 import { Track } from "livekit-client";
 
 interface Message {
   id: string;
-  role: "user" | "assistant" | "meeting" | "transcription" | "translation";
+  role: "user" | "assistant" | "meeting" | "translation";
   content: string;
   isTranscription?: boolean;
   speaker?: string;
@@ -52,16 +52,15 @@ export function AISidebar({ onClose }: AISidebarProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListeningToMeeting, setIsListeningToMeeting] = useState(false);
   
-  // Live Transcription state
-  const [isLiveTranscribing, setIsLiveTranscribing] = useState(false);
-  
   // Live Translation state
   const [isLiveTranslating, setIsLiveTranslating] = useState(false);
   const [showLanguageSelector, setShowLanguageSelector] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<string>("");
+  const [audioEnabled, setAudioEnabled] = useState(true); // For translation audio output
+  const audioEnabledRef = useRef(true); // Ref to avoid hook dependency issues
   
-  // Active feature mode: 'ai' | 'transcription' | 'translation'
-  const [activeMode, setActiveMode] = useState<'ai' | 'transcription' | 'translation'>('ai');
+  // Active feature mode: 'ai' | 'translation'
+  const [activeMode, setActiveMode] = useState<'ai' | 'translation'>('ai');
   
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -88,10 +87,14 @@ export function AISidebar({ onClose }: AISidebarProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Keep audioEnabled ref in sync with state
+  useEffect(() => {
+    audioEnabledRef.current = audioEnabled;
+  }, [audioEnabled]);
+
   // Full cleanup function (only for unmount)
   const cleanupAllModes = useCallback(() => {
     setIsListeningToMeeting(false);
-    setIsLiveTranscribing(false);
     setIsLiveTranslating(false);
     setActiveMode('ai');
     setTargetLanguage("");
@@ -99,7 +102,7 @@ export function AISidebar({ onClose }: AISidebarProps) {
     if (meetingRecorderRef.current && meetingRecorderRef.current.state !== "inactive") {
       try {
         meetingRecorderRef.current.stop();
-      } catch (e) {
+      } catch {
         // Ignore errors during cleanup
       }
     }
@@ -198,22 +201,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
               ]);
               break;
               
-            case "live_transcription":
-              // Live transcription only (no AI response)
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: generateMessageId(),
-                  role: "transcription",
-                  content: data.content,
-                  speaker: data.speaker || "Participant",
-                  isTranscription: true,
-                },
-              ]);
-              break;
-              
             case "live_translation":
-              // Live translation result
+              // Live translation result with audio
               setMessages((prev) => [
                 ...prev,
                 {
@@ -226,6 +215,29 @@ export function AISidebar({ onClose }: AISidebarProps) {
                   isTranscription: true,
                 },
               ]);
+              
+              // Play the translated audio if available and audio is enabled
+              if (data.audio && data.has_audio && audioEnabledRef.current) {
+                try {
+                  const audioBlob = new Blob(
+                    [Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))],
+                    { type: 'audio/mp3' }
+                  );
+                  const audioUrl = URL.createObjectURL(audioBlob);
+                  const audio = new Audio(audioUrl);
+                  audio.volume = 1.0;
+                  audio.play().then(() => {
+                    console.log('[Translation] Playing audio...');
+                  }).catch(e => console.error('Audio playback error:', e));
+                  // Clean up URL after playback
+                  audio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    console.log('[Translation] Audio finished');
+                  };
+                } catch (e) {
+                  console.error('Error playing translation audio:', e);
+                }
+              }
               break;
               
             case "typing":
@@ -293,7 +305,7 @@ export function AISidebar({ onClose }: AISidebarProps) {
   // Capture and send meeting audio periodically (shared by all modes)
   const captureMeetingAudio = useCallback(async () => {
     // Check if any capture mode is active
-    const isCapturing = isListeningToMeeting || isLiveTranscribing || isLiveTranslating;
+    const isCapturing = isListeningToMeeting || isLiveTranslating;
     if (!isCapturing || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
     }
@@ -406,12 +418,7 @@ export function AISidebar({ onClose }: AISidebarProps) {
               const base64Audio = (reader.result as string).split(",")[1];
               
               // Send different message types based on active mode
-              if (currentMode === 'transcription') {
-                wsRef.current.send(JSON.stringify({
-                  type: "live_transcription_audio",
-                  data: base64Audio,
-                }));
-              } else if (currentMode === 'translation') {
+              if (currentMode === 'translation') {
                 wsRef.current.send(JSON.stringify({
                   type: "live_translation_audio",
                   data: base64Audio,
@@ -436,29 +443,36 @@ export function AISidebar({ onClose }: AISidebarProps) {
       meetingRecorderRef.current = mediaRecorder;
       mediaRecorder.start();
 
-      // Record for 6 seconds to capture full questions/sentences
+      // Different recording durations based on mode:
+      // - Translation: 3 seconds (need fast response for real-time feel)
+      // - AI Assistant: 5 seconds (need full questions)
+      const recordDuration = currentMode === 'translation' ? 3000 : 5000;
+      
       setTimeout(() => {
         if (mediaRecorder.state !== "inactive") {
           mediaRecorder.stop();
         }
-      }, 6000);
+      }, recordDuration);
 
     } catch (error) {
       console.error("Error capturing audio:", error);
     }
-  }, [isListeningToMeeting, isLiveTranscribing, isLiveTranslating, activeMode, targetLanguage, remoteParticipants]);
+  }, [isListeningToMeeting, isLiveTranslating, activeMode, targetLanguage, remoteParticipants]);
 
   // Set up interval for audio capture (shared by all modes)
   useEffect(() => {
     let intervalId: NodeJS.Timeout | null = null;
     
-    const isCapturing = isListeningToMeeting || isLiveTranscribing || isLiveTranslating;
+    const isCapturing = isListeningToMeeting || isLiveTranslating;
 
     if (isCapturing && isConnected) {
+      // Different intervals based on mode (recording time + 0.5s gap)
+      const captureInterval = isLiveTranslating ? 3500 : 5500;  // 3s or 5s record + 0.5s gap
+      
       // Start capturing immediately
       captureMeetingAudio();
-      // Then capture every 6.5 seconds (6s recording + 0.5s gap) to get full sentences
-      intervalId = setInterval(captureMeetingAudio, 6500);
+      // Then capture at the mode-specific interval
+      intervalId = setInterval(captureMeetingAudio, captureInterval);
     }
 
     return () => {
@@ -466,7 +480,7 @@ export function AISidebar({ onClose }: AISidebarProps) {
         clearInterval(intervalId);
       }
     };
-  }, [isListeningToMeeting, isLiveTranscribing, isLiveTranslating, isConnected, captureMeetingAudio]);
+  }, [isListeningToMeeting, isLiveTranslating, isConnected, captureMeetingAudio]);
 
   // Helper to stop recorder without resetting states
   const stopRecorderOnly = useCallback(() => {
@@ -495,7 +509,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
   const startMeetingListening = () => {
     // Stop recorder and other modes
     stopRecorderOnly();
-    setIsLiveTranscribing(false);
     setIsLiveTranslating(false);
     
     // Set AI mode
@@ -533,56 +546,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     }
   }, [stopRecorderOnly]);
 
-  // ==================== Live Transcription Mode ====================
-  const toggleLiveTranscription = () => {
-    if (isLiveTranscribing) {
-      stopLiveTranscription();
-    } else {
-      startLiveTranscription();
-    }
-  };
-
-  const startLiveTranscription = () => {
-    // Stop recorder and other modes
-    stopRecorderOnly();
-    setIsListeningToMeeting(false);
-    setIsLiveTranslating(false);
-    
-    // Set transcription mode
-    setIsLiveTranscribing(true);
-    setActiveMode('transcription');
-    
-    // Send status to server
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: "start_transcription",
-      }));
-    }
-    
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: generateMessageId(),
-        role: "assistant",
-        content: remoteParticipants.length > 0 
-          ? `📝 **Live Transcription Active!**\n\nTranscribing audio from ${remoteParticipants.length} participant(s).\n\n• Real-time speech-to-text\n• No AI responses - just transcription\n• Great for note-taking!`
-          : `⚠️ **No Other Participants Yet**\n\nI need another person in the call to transcribe.\n\n• Open this room in another browser/tab\n• Or invite someone to join\n• Make sure they enable their microphone`,
-      },
-    ]);
-  };
-
-  const stopLiveTranscription = useCallback(() => {
-    stopRecorderOnly();
-    setIsLiveTranscribing(false);
-    
-    // Send status to server
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: "stop_transcription",
-      }));
-    }
-  }, [stopRecorderOnly]);
-
   // ==================== Live Translation Mode ====================
   const toggleLiveTranslation = () => {
     if (isLiveTranslating) {
@@ -597,7 +560,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     // Stop recorder and other modes
     stopRecorderOnly();
     setIsListeningToMeeting(false);
-    setIsLiveTranscribing(false);
     
     // Set translation mode
     setTargetLanguage(selectedLanguage);
@@ -762,7 +724,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
   const getStatusText = () => {
     if (!isConnected) return "Reconnecting...";
     if (isListeningToMeeting) return "AI Assistant Active";
-    if (isLiveTranscribing) return "Live Transcription";
     if (isLiveTranslating) {
       const langName = SUPPORTED_LANGUAGES.find(l => l.code === targetLanguage)?.name || targetLanguage;
       return `Translating to ${langName}`;
@@ -839,7 +800,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
             <p className="text-xs text-gray-500 max-w-xs mb-3">Use the buttons below:</p>
             <div className="text-xs text-gray-500 space-y-1.5 text-left">
               <p>🎧 <strong className="text-emerald-400">AI Assistant</strong> - Transcribe + AI answers</p>
-              <p>📝 <strong className="text-amber-400">Transcribe</strong> - Speech to text only</p>
               <p>🌐 <strong className="text-blue-400">Translate</strong> - Real-time translation</p>
             </div>
           </div>
@@ -856,8 +816,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
                   ? "bg-gradient-to-br from-violet-500/30 to-indigo-600/30"
                   : message.role === "meeting"
                   ? "bg-gradient-to-br from-emerald-500/30 to-teal-600/30"
-                  : message.role === "transcription"
-                  ? "bg-gradient-to-br from-amber-500/30 to-orange-500/30"
                   : message.role === "translation"
                   ? "bg-gradient-to-br from-blue-500/30 to-cyan-500/30"
                   : "bg-gradient-to-br from-blue-500 to-blue-600"
@@ -867,8 +825,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
                 <Bot className="w-4 h-4 text-indigo-400" />
               ) : message.role === "meeting" ? (
                 <Radio className="w-4 h-4 text-emerald-400" />
-              ) : message.role === "transcription" ? (
-                <FileText className="w-4 h-4 text-amber-400" />
               ) : message.role === "translation" ? (
                 <Languages className="w-4 h-4 text-cyan-400" />
               ) : message.isTranscription ? (
@@ -883,8 +839,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
                   ? "bg-gray-800/80 text-gray-200 rounded-tl-none border border-gray-700/50 backdrop-blur-sm"
                   : message.role === "meeting"
                   ? "bg-emerald-900/30 text-emerald-100 rounded-tl-none border border-emerald-700/30 backdrop-blur-sm"
-                  : message.role === "transcription"
-                  ? "bg-amber-900/30 text-amber-100 rounded-tl-none border border-amber-700/30 backdrop-blur-sm"
                   : message.role === "translation"
                   ? "bg-blue-900/30 text-blue-100 rounded-tl-none border border-blue-700/30 backdrop-blur-sm"
                   : "bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-tr-none shadow-lg shadow-blue-500/20"
@@ -893,11 +847,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
               {message.role === "meeting" && message.speaker && (
                 <span className="text-xs text-emerald-300 opacity-70 block mb-1">
                   🎤 {message.speaker}:
-                </span>
-              )}
-              {message.role === "transcription" && message.speaker && (
-                <span className="text-xs text-amber-300 opacity-70 block mb-1">
-                  📝 {message.speaker}:
                 </span>
               )}
               {message.role === "translation" && (
@@ -943,31 +892,43 @@ export function AISidebar({ onClose }: AISidebarProps) {
       {/* Input Area */}
       <div className="p-3 border-t border-gray-800 bg-gray-900 space-y-3">
         {/* Status indicator for active modes */}
-        {(isListeningToMeeting || isLiveTranscribing || isLiveTranslating) && (
+        {(isListeningToMeeting || isLiveTranslating) && (
           <div className={`flex items-center justify-between py-2 px-3 rounded-lg ${
             isListeningToMeeting ? 'bg-emerald-500/10 border border-emerald-500/30' : 
-            isLiveTranscribing ? 'bg-amber-500/10 border border-amber-500/30' : 
             'bg-blue-500/10 border border-blue-500/30'
           }`}>
             <div className="flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full animate-pulse ${
                 isListeningToMeeting ? 'bg-emerald-400' : 
-                isLiveTranscribing ? 'bg-amber-400' : 
                 'bg-blue-400'
               }`} />
               <span className={`text-xs font-medium ${
                 isListeningToMeeting ? 'text-emerald-400' : 
-                isLiveTranscribing ? 'text-amber-400' : 
                 'text-blue-400'
               }`}>
                 {isListeningToMeeting && 'AI Assistant Active'}
-                {isLiveTranscribing && 'Transcribing...'}
                 {isLiveTranslating && `Translating to ${SUPPORTED_LANGUAGES.find(l => l.code === targetLanguage)?.name}`}
               </span>
             </div>
-            <span className="text-xs text-gray-500">
-              {remoteParticipants.length > 0 ? `${remoteParticipants.length} participant(s)` : 'No participants'}
-            </span>
+            <div className="flex items-center gap-2">
+              {/* Audio toggle for translation */}
+              {isLiveTranslating && (
+                <button
+                  onClick={() => setAudioEnabled(!audioEnabled)}
+                  title={audioEnabled ? "Mute audio output" : "Enable audio output"}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    audioEnabled 
+                      ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' 
+                      : 'bg-gray-700 text-gray-500 hover:bg-gray-600'
+                  }`}
+                >
+                  {audioEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                </button>
+              )}
+              <span className="text-xs text-gray-500">
+                {remoteParticipants.length > 0 ? `${remoteParticipants.length} participant(s)` : 'No participants'}
+              </span>
+            </div>
           </div>
         )}
 
@@ -979,8 +940,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
           </div>
         )}
 
-        {/* Three Feature Buttons - SEPARATE */}
-        <div className="grid grid-cols-3 gap-2">
+        {/* Two Feature Buttons */}
+        <div className="grid grid-cols-2 gap-2">
           {/* AI Assistant Button */}
           <button
             onClick={toggleMeetingListening}
@@ -996,23 +957,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
           >
             <Headphones className={`w-5 h-5 ${isListeningToMeeting ? 'animate-pulse' : ''}`} />
             <span className="text-[10px] font-medium">AI Assistant</span>
-          </button>
-
-          {/* Live Transcription Button */}
-          <button
-            onClick={toggleLiveTranscription}
-            disabled={!isConnected}
-            title="Live Transcription - Speech to Text Only"
-            className={`flex flex-col items-center justify-center gap-1 py-2.5 px-2 rounded-xl transition-all duration-200 ${
-              isLiveTranscribing
-                ? "bg-amber-500 text-white shadow-lg shadow-amber-500/30"
-                : isConnected
-                ? "bg-gray-800 text-gray-400 hover:bg-amber-500/20 hover:text-amber-400 border border-gray-700 hover:border-amber-500/50"
-                : "bg-gray-800 text-gray-600 cursor-not-allowed border border-gray-700"
-            }`}
-          >
-            <FileText className={`w-5 h-5 ${isLiveTranscribing ? 'animate-pulse' : ''}`} />
-            <span className="text-[10px] font-medium">Transcribe</span>
           </button>
 
           {/* Live Translation Button */}
