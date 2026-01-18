@@ -16,6 +16,7 @@ import { ParticipantList } from "./ParticipantList";
 import { CustomControlBar } from "./CustomControlBar";
 import { CodeEditorSidebar } from "./CodeEditorSidebar";
 import { TranscriptionSidebar } from "./TranscriptionSidebar";
+import { WhiteboardSidebar } from "./WhiteboardSidebar";
 
 // Message types for code editor synchronization
 interface CodeEditorMessage {
@@ -38,7 +39,7 @@ export function VideoConferenceComponent() {
   const roomId = room?.name || "default-room";
 
   const [activeSidebar, setActiveSidebar] = useState<
-    "none" | "chat" | "participants" | "ai" | "code" | "transcription"
+    "none" | "chat" | "participants" | "ai" | "code" | "transcription" | "whiteboard"
   >("none");
   const [isCodeEditorFullScreen, setIsCodeEditorFullScreen] = useState(false);
   const [codeEditorStartedBy, setCodeEditorStartedBy] = useState<string | null>(null);
@@ -94,7 +95,7 @@ export function VideoConferenceComponent() {
     };
   }, [room]);
 
-  const toggleSidebar = (sidebar: "chat" | "participants" | "ai" | "code" | "transcription") => {
+  const toggleSidebar = (sidebar: "chat" | "participants" | "ai" | "code" | "transcription" | "whiteboard") => {
     if (sidebar === "code") {
       if (activeSidebar !== "code") {
         // Opening code editor - broadcast to all
@@ -159,7 +160,9 @@ export function VideoConferenceComponent() {
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ 
-                width: activeSidebar === "code" && isCodeEditorFullScreen ? "100%" : activeSidebar === "code" ? 600 : 400, 
+                width: activeSidebar === "code" && isCodeEditorFullScreen ? "100%" : 
+                       activeSidebar === "code" ? 600 : 
+                       activeSidebar === "whiteboard" ? 550 : 400, 
                 opacity: 1 
               }}
               exit={{ width: 0, opacity: 0 }}
@@ -196,6 +199,9 @@ export function VideoConferenceComponent() {
               )}
               {activeSidebar === "transcription" && (
                 <TranscriptionSidebar onClose={() => setActiveSidebar("none")} />
+              )}
+              {activeSidebar === "whiteboard" && (
+                <WhiteboardSidebar onClose={() => setActiveSidebar("none")} />
               )}
             </motion.div>
           )}

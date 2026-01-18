@@ -11,6 +11,7 @@ import {
   PhoneOff,
   Code2,
   FileText,
+  PenTool,
 } from "lucide-react";
 import { useState } from "react";
 import { ControlButton } from "./ControlButton";
@@ -18,7 +19,7 @@ import { DeviceMenu } from "./DeviceMenu";
 
 interface CustomControlBarProps {
   activeSidebar: string;
-  onToggleSidebar: (sidebar: "chat" | "participants" | "ai" | "code" | "transcription") => void;
+  onToggleSidebar: (sidebar: "chat" | "participants" | "ai" | "code" | "transcription" | "whiteboard") => void;
 }
 
 export function CustomControlBar({
@@ -143,6 +144,15 @@ export function CustomControlBar({
           inactiveClass="bg-gray-800 text-gray-300 hover:bg-gray-700"
         >
           <Code2 className="w-5 h-5" />
+        </ControlButton>
+
+        <ControlButton
+          onClick={() => onToggleSidebar("whiteboard")}
+          isActive={activeSidebar === "whiteboard"}
+          activeClass="bg-rose-500 text-white hover:bg-rose-600"
+          inactiveClass="bg-gray-800 text-gray-300 hover:bg-gray-700"
+        >
+          <PenTool className="w-5 h-5" />
         </ControlButton>
 
         <div className="w-px h-8 bg-gray-700 mx-2" />
