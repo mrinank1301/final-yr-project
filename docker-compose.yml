@@ -56,20 +56,23 @@ services:
       - python
       - livekit
 
-  # Self-hosted LiveKit: host network avoids mapping 10k+ UDP ports (fixes docker-proxy errors)
+  # Self-hosted LiveKit: normal container so nginx can reach livekit:7880 (no gateway)
+  # Small UDP range (101 ports) to avoid docker-proxy errors on some VMs
   livekit:
     image: livekit/livekit-server:latest
     restart: unless-stopped
-    network_mode: host
     environment:
       LIVEKIT_CONFIG: |
         port: 7880
         rtc:
           tcp_port: 7881
           port_range_start: 50000
-          port_range_end: 60000
+          port_range_end: 50100
           use_external_ip: true
         keys:
           api_key: "${LIVEKIT_API_KEY}"
           api_secret: "${LIVEKIT_API_SECRET}"
     command: --bind 0.0.0.0
+    ports:
+      - "7880:7880"
+      - "50000-50100:50000-50100/udp"
