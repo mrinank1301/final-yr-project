@@ -77,3 +77,23 @@ class CodeExecutionResponse(BaseModel):
     output: str = ""
     error: str = ""
     execution_time: str = ""
+
+
+class MeetingEndRequest(BaseModel):
+    """Request model for ending a meeting"""
+    room_id: str
+    participant_name: str = ""
+
+
+class MeetingSummaryResponse(BaseModel):
+    """Response model for meeting summary with minutes"""
+    success: bool
+    message: str
+    room_id: str
+    meeting_data: dict = {}
+    summary: str = ""
+    minutes: dict = {}
+    key_points: list = []
+    action_items: list = []
+    decisions: list = []
+    topics_discussed: list = []

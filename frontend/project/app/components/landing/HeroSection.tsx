@@ -2,15 +2,22 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Video, Keyboard, ArrowRight, Sparkles } from "lucide-react";
+import { Video, Keyboard, ArrowRight, Sparkles, CheckCircle, Play } from "lucide-react";
 import { motion } from "framer-motion";
 
 export default function HeroSection() {
   const [meetingCode, setMeetingCode] = useState("");
   const [userName, setUserName] = useState("");
+  const [isInputVisible, setIsInputVisible] = useState(false);
   const router = useRouter();
 
-  const handleCreateMeeting = () => {
+  const handleStart = () => {
+    // Reveal input or redirect if name is already set
+    if (!isInputVisible) {
+      setIsInputVisible(true);
+      return;
+    }
+    
     if (!userName.trim()) {
       alert("Please enter your name");
       return;
@@ -19,7 +26,12 @@ export default function HeroSection() {
     router.push(`/room/${roomId}?name=${encodeURIComponent(userName)}`);
   };
 
-  const handleJoinMeeting = () => {
+  const handleJoin = () => {
+     if (!isInputVisible) {
+      setIsInputVisible(true);
+      return;
+    }
+
     if (!userName.trim()) {
       alert("Please enter your name");
       return;
@@ -32,128 +44,121 @@ export default function HeroSection() {
   };
 
   return (
-    <section className="pt-32 pb-20 lg:pt-48 lg:pb-32 overflow-hidden">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid lg:grid-cols-2 gap-16 items-center">
-          {/* Left Content */}
-          <motion.div
-            initial={{ opacity: 0, x: -50 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="space-y-8"
-          >
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50 text-blue-600 font-medium text-sm">
-              <Sparkles className="w-4 h-4" />
-              <span>AI-Powered Video Calls</span>
-            </div>
-            
-            <h1 className="text-5xl lg:text-7xl font-bold tracking-tight text-gray-900 leading-tight">
-              Video calls, <br />
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
-                Reimagined.
-              </span>
-            </h1>
-            
-            <p className="text-xl text-gray-600 max-w-lg leading-relaxed">
-              Experience the future of communication with real-time AI summarization, 
-              attendance tracking, and voice translation.
-            </p>
+    <section className="relative pt-32 pb-20 lg:pt-48 lg:pb-32 overflow-hidden bg-white">
+      {/* Grid Pattern Background */}
+      <div className="absolute inset-0 z-0 opacity-[0.03]" 
+           style={{ 
+             backgroundImage: 'linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px)', 
+             backgroundSize: '50px 50px' 
+           }}>
+      </div>
 
-            <div className="p-6 bg-white rounded-2xl shadow-xl border border-gray-100 space-y-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Display Name
-                </label>
-                <input
+      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        
+        {/* Floating Avatars (Decorative) */}
+        <motion.div 
+          initial={{ opacity: 0, x: -50 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.5 }}
+          className="absolute top-0 left-10 lg:left-40 hidden md:block"
+        >
+          <div className="flex items-center gap-2 bg-white p-2 rounded-full shadow-lg border border-gray-100">
+            <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="User" className="w-10 h-10 rounded-full bg-gray-100" />
+            <div className="w-3 h-3 bg-green-500 rounded-full border-2 border-white absolute -bottom-1 -right-1"></div>
+            <div className="absolute -right-12 -top-6 bg-green-500 text-white text-xs px-2 py-1 rounded">Meghana</div>
+          </div>
+        </motion.div>
+
+        <motion.div 
+          initial={{ opacity: 0, x: 50 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.7 }}
+          className="absolute top-35 right-10 lg:right-40 hidden md:block"
+        >
+          <div className="flex items-center gap-2 bg-white p-2 rounded-full shadow-lg border border-gray-100">
+             <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Aneka" alt="User" className="w-10 h-10 rounded-full bg-gray-100" />
+             <div className="w-3 h-3 bg-blue-500 rounded-full border-2 border-white absolute -bottom-1 -right-1"></div>
+             <div className="absolute -left-12 -bottom-6 bg-blue-600 text-white text-xs px-2 py-1 rounded">Pushpender</div>
+          </div>
+        </motion.div>
+
+         {/* Badge */}
+        <motion.div
+           initial={{ opacity: 0, y: 20 }}
+           animate={{ opacity: 1, y: 0 }}
+           className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-gray-100 border border-gray-200 text-gray-600 text-xs font-semibold uppercase tracking-wider mb-8"
+        >
+          <Sparkles className="w-3 h-3 text-yellow-500" />
+          <span>Create For Fast</span>
+        </motion.div>
+
+        {/* Headline */}
+        <motion.h1 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="text-5xl lg:text-7xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-br from-black to-blue-900 leading-tight mb-6"
+        >
+          Where Real-Time Calls  <span className="underline decoration-green-400 decoration-4 underline-offset-4 text-gray-900">Meet</span> <br />
+          Real Intelligence
+        </motion.h1>
+        
+        {/* Subheadline */}
+        <motion.p 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="text-xl text-gray-600 max-w-3xl mx-auto mb-10 leading-relaxed"
+        >
+          One platform for intelligent conversationsfrom daily calls to enterprise workflows.
+        </motion.p>
+        
+        {/* Helper Description for Inputs if visible */}
+        {isInputVisible && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }} 
+            animate={{ opacity: 1, height: 'auto' }}
+            className="mb-6 max-w-md mx-auto space-y-4"
+          >
+             <input
+              type="text"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              placeholder="Enter your name"
+              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black transition-all text-gray-900"
+            />
+             <div className="flex gap-2">
+                 <input
                   type="text"
-                  value={userName}
-                  onChange={(e) => setUserName(e.target.value)}
-                  placeholder="Enter your name"
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-900"
+                  value={meetingCode}
+                  onChange={(e) => setMeetingCode(e.target.value)}
+                  placeholder="Meeting Code (for joining)"
+                  className="flex-1 px-4 py-3 bg-gray-50 border text-gray-900 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black transition-all"
                 />
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-4">
-                <button
-                  onClick={handleCreateMeeting}
-                  className="flex-1 flex items-center justify-center gap-2 px-6 py-3.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-all hover:shadow-lg hover:shadow-blue-600/20 font-medium group"
-                >
-                  <Video className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                  New Meeting
-                </button>
-                
-                <div className="flex-1 flex gap-2">
-                  <div className="relative flex-1">
-                    <Keyboard className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input
-                      type="text"
-                      value={meetingCode}
-                      onChange={(e) => setMeetingCode(e.target.value)}
-                      placeholder="Enter code"
-                      className="w-full pl-10 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-900"
-                    />
-                  </div>
-                  <button
-                    onClick={handleJoinMeeting}
-                    disabled={!meetingCode.trim()}
-                    className="px-4 py-3.5 bg-gray-100 text-gray-900 rounded-xl hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <ArrowRight className="w-5 h-5" />
-                  </button>
-                </div>
-              </div>
-            </div>
+             </div>
           </motion.div>
+        )}
 
-          {/* Right Content - Abstract Visual */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.8 }}
-            className="relative hidden lg:block"
+        {/* Buttons */}
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="flex flex-col sm:flex-row items-center justify-center gap-4"
+        >
+          <button 
+            onClick={handleStart}
+            className="px-8 py-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-all font-medium text-lg shadow-lg hover:shadow-xl w-full sm:w-auto"
           >
-            <div className="absolute inset-0 bg-gradient-to-tr from-blue-600/20 to-purple-600/20 rounded-full blur-3xl animate-pulse" />
-            <div className="relative bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100 p-4">
-              <div className="aspect-square rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center relative overflow-hidden">
-                {/* Decorative Elements */}
-                <motion.div 
-                  animate={{ y: [0, -20, 0] }}
-                  transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
-                  className="absolute top-10 right-10 bg-white p-4 rounded-2xl shadow-lg flex items-center gap-3"
-                >
-                  <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center text-green-600">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-bold text-gray-900">AI Summary</div>
-                    <div className="text-xs text-gray-500">Processing...</div>
-                  </div>
-                </motion.div>
-
-                <motion.div 
-                  animate={{ y: [0, 20, 0] }}
-                  transition={{ repeat: Infinity, duration: 5, ease: "easeInOut", delay: 1 }}
-                  className="absolute bottom-10 left-10 bg-white p-4 rounded-2xl shadow-lg flex items-center gap-3"
-                >
-                  <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-                    <Video className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-bold text-gray-900">HD Video</div>
-                    <div className="text-xs text-gray-500">Active</div>
-                  </div>
-                </motion.div>
-
-                {/* Center Circle */}
-                <div className="w-48 h-48 bg-white rounded-full shadow-xl flex items-center justify-center relative z-10">
-                  <div className="w-40 h-40 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full flex items-center justify-center">
-                     <Video className="w-16 h-16 text-white" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        </div>
+            {isInputVisible ? "Create New Meeting" : "Start Now"}
+          </button>
+          <button 
+             onClick={handleJoin}
+             className="px-8 py-4 bg-white text-gray-900 border border-gray-200 rounded-lg hover:bg-gray-50 transition-all font-medium text-lg w-full sm:w-auto"
+          >
+            {isInputVisible ? "Join Existing" : "Join a Meeting"}
+          </button>
+        </motion.div>
       </div>
     </section>
   );

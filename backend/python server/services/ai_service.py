@@ -7,7 +7,9 @@ import tempfile
 import os
 import base64
 import aiohttp
+import json
 from typing import List, Optional, Tuple
+from datetime import datetime
 from groq import Groq
 
 from config import (
@@ -142,36 +144,36 @@ async def process_with_groq(
     chat_history: Optional[List[dict]] = None,
     meeting_context: Optional[List[str]] = None
 ) -> str:
-    """Process text message with Groq AI for ultra-fast responses"""
+    """Process text message with Groq AI for ultra-fast responses - Optimized"""
     if not groq_client:
         print("[Groq LLM] ERROR: No client available")
         return "AI service not configured. Please set GROQ_API_KEY."
     
     try:
-        # Build messages for Groq
+        # Build messages for Groq - optimized context window
         messages = [
             {"role": "system", "content": AI_SYSTEM_INSTRUCTION}
         ]
         
-        # Add meeting context if available
+        # Add meeting context if available (limit to most recent 8 for efficiency)
         if meeting_context and len(meeting_context) > 0:
-            recent_context = meeting_context[-10:]
+            recent_context = meeting_context[-8:]  # Reduced from 10 to 8
             context_text = "\n".join(recent_context)
             messages.append({
                 "role": "system",
                 "content": f"Recent conversation:\n{context_text}"
             })
         
-        # Add chat history
+        # Add chat history (limit to last 5 for efficiency)
         if chat_history:
-            for msg in chat_history[-6:]:
+            for msg in chat_history[-5:]:  # Reduced from 6 to 5
                 role = "user" if msg["role"] == "user" else "assistant"
                 messages.append({"role": role, "content": msg["content"]})
         
         # Add current message
         messages.append({"role": "user", "content": message})
         
-        # Try each model
+        # Try each model - optimized order (fastest first)
         loop = asyncio.get_event_loop()
         
         for model in GROQ_MODELS:
@@ -183,23 +185,23 @@ async def process_with_groq(
                         model=m,
                         messages=messages,
                         temperature=0.7,
-                        max_tokens=512,
+                        max_tokens=400,  # Reduced from 512 for faster responses
                     )
                 )
                 
-                result = response.choices[0].message.content
-                print(f"[Groq LLM] Response generated successfully")
+                result = response.choices[0].message.content.strip()
+                print(f"[Groq LLM] Response generated successfully ({len(result)} chars)")
                 return result
                 
             except Exception as e:
                 error_msg = str(e)
-                print(f"[Groq LLM] Error with {model}: {error_msg}")
+                print(f"[Groq LLM] Error with {model}: {error_msg[:100]}")
                 # If model not found, try next
                 if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
                     continue
                 # If rate limited, wait and retry
                 if "rate" in error_msg.lower():
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.5)  # Reduced wait time
                     continue
                 continue
         
@@ -217,7 +219,7 @@ async def translate_text(
     target_language: str,
     source_language: str = "auto"
 ) -> str:
-    """Translate text to target language using Groq LLM"""
+    """Translate text to target language using Groq LLM - Optimized for speed"""
     if not groq_client:
         print("[Translation] ERROR: No Groq client available")
         return text  # Return original if no client
@@ -237,21 +239,15 @@ async def translate_text(
         
         target_name = language_names.get(target_language, target_language)
         
-        # More explicit prompt for translation
-        prompt = f"""Translate this text into {target_name}. Output ONLY the {target_name} translation, nothing else.
-
-Input: {text}
-
-{target_name} translation:"""
-        
+        # Optimized prompt - shorter and more direct
         messages = [
-            {"role": "system", "content": f"You are a translator. Your ONLY job is to translate text into {target_name}. Output ONLY the translation in {target_name}, no explanations, no original text, no quotes. If the text is already in {target_name}, output it as is."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": f"Translate to {target_name} only. Output translation only, no explanations."},
+            {"role": "user", "content": f"Translate: {text}"}
         ]
         
         # Safe print that handles non-ASCII characters
         try:
-            print(f"[Translation] Translating to {target_name}: '{text[:50]}...'")
+            print(f"[Translation] Translating to {target_name}: '{text[:40]}...'")
         except UnicodeEncodeError:
             print(f"[Translation] Translating to {target_name}: [non-ASCII input]")
 
@@ -269,8 +265,8 @@ Input: {text}
                     lambda m=model: groq_client.chat.completions.create(
                         model=m,
                         messages=messages,
-                        temperature=0.2,  # Lower temp for faster, more consistent translation
-                        max_tokens=150,   # Shorter for speed - translations don't need long output
+                        temperature=0.1,  # Lower temp for faster, more consistent translation
+                        max_tokens=100,   # Reduced for speed
                     )
                 )
                 
@@ -278,10 +274,12 @@ Input: {text}
                 # Remove quotes if present
                 if result.startswith('"') and result.endswith('"'):
                     result = result[1:-1]
+                if result.startswith("'") and result.endswith("'"):
+                    result = result[1:-1]
                 
                 # Safe print that handles non-ASCII characters
                 try:
-                    print(f"[Translation] Success: translated to {target_name}")
+                    print(f"[Translation] Success: {len(result)} chars")
                 except:
                     pass
                 return result
@@ -296,14 +294,14 @@ Input: {text}
                     continue
                     
                 try:
-                    print(f"[Translation] Error with {model}: {error_msg[:100]}")
+                    print(f"[Translation] Error with {model}: {error_msg[:80]}")
                 except:
                     print(f"[Translation] Error with {model}")
                     
                 if "not found" in error_msg.lower() or "does not exist" in error_msg.lower() or "decommissioned" in error_msg.lower():
                     continue
                 if "rate" in error_msg.lower():
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.5)  # Reduced wait time
                     continue
                 continue
         
@@ -429,3 +427,166 @@ async def process_message(
     """Main message processing function - uses Groq LLM"""
     print(f"[Process] Message: {message[:50]}...")
     return await process_with_groq(message, chat_history, meeting_context)
+
+
+async def generate_meeting_summary_with_minutes(
+    transcript: str,
+    participants: List[str],
+    duration: str
+) -> dict:
+    """
+    Generate comprehensive meeting summary with minutes of meeting
+    Returns dict with summary, minutes, key_points, action_items, decisions
+    """
+    if not groq_client:
+        print("[Summary] ERROR: No Groq client available")
+        return {
+            "summary": "Summary generation not available.",
+            "minutes": {},
+            "key_points": [],
+            "action_items": [],
+            "decisions": []
+        }
+    
+    if not transcript or len(transcript.strip()) < 10:
+        return {
+            "summary": "No transcript available for summary.",
+            "minutes": {},
+            "key_points": [],
+            "action_items": [],
+            "decisions": []
+        }
+    
+    try:
+        participants_str = ", ".join(participants) if participants else "Unknown"
+        
+        prompt = f"""Generate a comprehensive meeting summary and minutes from this transcript.
+
+Meeting Details:
+- Participants: {participants_str}
+- Duration: {duration}
+
+Transcript:
+{transcript}
+
+Please provide a structured response in the following JSON format:
+{{
+    "summary": "A concise 2-3 paragraph summary of the entire meeting",
+    "key_points": ["Point 1", "Point 2", "Point 3"],
+    "action_items": [{{"item": "Action description", "assignee": "Person name or 'All'", "due_date": "Date if mentioned or 'TBD'"}}],
+    "decisions": ["Decision 1", "Decision 2"],
+    "topics_discussed": ["Topic 1", "Topic 2", "Topic 3"]
+}}
+
+Be thorough and extract all important information. If information is not available, use "N/A" or empty arrays."""
+
+        messages = [
+            {"role": "system", "content": "You are a professional meeting minutes generator. Always respond with valid JSON only, no additional text."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        loop = asyncio.get_event_loop()
+        
+        # Use a capable model for better structured output
+        for model in ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile"]:
+            try:
+                print(f"[Summary] Generating summary with {model}...")
+                response = await loop.run_in_executor(
+                    None,
+                    lambda m=model: groq_client.chat.completions.create(
+                        model=m,
+                        messages=messages,
+                        temperature=0.3,  # Lower temp for more consistent structured output
+                        max_tokens=2000,
+                        response_format={"type": "json_object"} if "70b" in model else None
+                    )
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                
+                # Try to parse JSON
+                try:
+                    # Remove markdown code blocks if present
+                    if result_text.startswith("```"):
+                        result_text = result_text.split("```")[1]
+                        if result_text.startswith("json"):
+                            result_text = result_text[4:]
+                    result_text = result_text.strip()
+                    
+                    import json
+                    result = json.loads(result_text)
+                    
+                    # Ensure all required fields exist
+                    summary_data = {
+                        "summary": result.get("summary", "Summary not available."),
+                        "key_points": result.get("key_points", []),
+                        "action_items": result.get("action_items", []),
+                        "decisions": result.get("decisions", []),
+                        "topics_discussed": result.get("topics_discussed", [])
+                    }
+                    
+                    # Create minutes structure
+                    minutes = {
+                        "meeting_date": datetime.now().strftime("%Y-%m-%d"),
+                        "duration": duration,
+                        "participants": participants,
+                        "summary": summary_data["summary"],
+                        "key_points": summary_data["key_points"],
+                        "action_items": summary_data["action_items"],
+                        "decisions": summary_data["decisions"],
+                        "topics_discussed": summary_data["topics_discussed"]
+                    }
+                    
+                    summary_data["minutes"] = minutes
+                    
+                    print(f"[Summary] Successfully generated summary")
+                    return summary_data
+                    
+                except json.JSONDecodeError as e:
+                    print(f"[Summary] JSON parse error: {e}")
+                    print(f"[Summary] Response was: {result_text[:200]}")
+                    # Fall through to next model
+                    continue
+                    
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[Summary] Error with {model}: {error_msg[:100]}")
+                if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                    continue
+                if "rate" in error_msg.lower():
+                    await asyncio.sleep(1)
+                    continue
+                continue
+        
+        # Fallback: generate simple summary
+        print("[Summary] Using fallback simple summary")
+        simple_prompt = f"Summarize this meeting transcript in 3-4 sentences:\n\n{transcript}"
+        simple_summary = await process_with_groq(simple_prompt)
+        
+        return {
+            "summary": simple_summary,
+            "minutes": {
+                "meeting_date": datetime.now().strftime("%Y-%m-%d"),
+                "duration": duration,
+                "participants": participants,
+                "summary": simple_summary,
+                "key_points": [],
+                "action_items": [],
+                "decisions": [],
+                "topics_discussed": []
+            },
+            "key_points": [],
+            "action_items": [],
+            "decisions": [],
+            "topics_discussed": []
+        }
+        
+    except Exception as e:
+        print(f"[Summary] Exception: {e}")
+        return {
+            "summary": f"Error generating summary: {str(e)}",
+            "minutes": {},
+            "key_points": [],
+            "action_items": [],
+            "decisions": []
+        }

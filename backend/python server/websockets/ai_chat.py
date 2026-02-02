@@ -13,6 +13,10 @@ from services.ai_service import (
     translate_text,
     translate_and_speak
 )
+from services.meeting_service import (
+    get_or_create_meeting,
+    add_transcript_to_meeting
+)
 
 
 def is_similar_text(text1: str, text2: str, threshold: float = 0.7) -> bool:

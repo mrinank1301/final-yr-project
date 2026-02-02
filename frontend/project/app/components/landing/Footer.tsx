@@ -1,63 +1,60 @@
 "use client";
 
-import { Video, Github, Twitter, Linkedin } from "lucide-react";
 import Link from "next/link";
 
 export default function Footer() {
   return (
-    <footer className="bg-gray-900 text-white py-16">
+    <footer className="bg-white text-gray-900 pt-24 pb-12 overflow-hidden">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid md:grid-cols-4 gap-12 mb-12">
-          <div className="col-span-1 md:col-span-2">
-            <div className="flex items-center gap-2 mb-6">
-              <div className="bg-blue-600 p-2 rounded-lg">
-                <Video className="w-6 h-6 text-white" />
-              </div>
-              <span className="text-xl font-bold">Standby AI</span>
+        
+        {/* Top Section */}
+        <div className="flex flex-col md:flex-row justify-between items-start gap-16 mb-32">
+          
+          {/* Left: "Experience liftoff" */}
+          <div className="md:w-1/3">
+            <h3 className="text-3xl font-medium tracking-tight">
+              Experience liftoff
+            </h3>
+          </div>
+
+          {/* Right: Links */}
+          <div className="flex gap-24">
+            
+            {/* Product Column */}
+            <div className="space-y-6">
+              <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
+                Product
+              </h4>
+              <ul className="space-y-4">
+                <li><Link href="#" className="font-medium hover:text-blue-600 transition-colors">Start a Call</Link></li>
+                <li><Link href="#" className="font-medium hover:text-blue-600 transition-colors">Product</Link></li>
+                <li><Link href="#" className="font-medium hover:text-blue-600 transition-colors">Docs</Link></li>
+              </ul>
             </div>
-            <p className="text-gray-400 max-w-sm">
-              The world's most advanced AI-powered video calling platform. 
-              Making communication smarter, faster, and more efficient.
-            </p>
-          </div>
 
-          <div>
-            <h4 className="text-lg font-bold mb-6">Product</h4>
-            <ul className="space-y-4 text-gray-400">
-              <li><Link href="#" className="hover:text-white transition-colors">Features</Link></li>
-              <li><Link href="#" className="hover:text-white transition-colors">Pricing</Link></li>
-              <li><Link href="#" className="hover:text-white transition-colors">Enterprise</Link></li>
-              <li><Link href="#" className="hover:text-white transition-colors">Security</Link></li>
-            </ul>
-          </div>
+            {/* Resources Column */}
+            <div className="space-y-6">
+              <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
+                Resources
+              </h4>
+              <ul className="space-y-4">
+                <li><Link href="#" className="font-medium hover:text-blue-600 transition-colors">Pricing</Link></li>
+                <li><Link href="#" className="font-medium hover:text-blue-600 transition-colors">Use Cases</Link></li>
+              </ul>
+            </div>
 
-          <div>
-            <h4 className="text-lg font-bold mb-6">Company</h4>
-            <ul className="space-y-4 text-gray-400">
-              <li><Link href="#" className="hover:text-white transition-colors">About Us</Link></li>
-              <li><Link href="#" className="hover:text-white transition-colors">Careers</Link></li>
-              <li><Link href="#" className="hover:text-white transition-colors">Blog</Link></li>
-              <li><Link href="#" className="hover:text-white transition-colors">Contact</Link></li>
-            </ul>
           </div>
         </div>
 
-        <div className="border-t border-gray-800 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
-          <p className="text-gray-500 text-sm">
-            © 2024 Standby AI. All rights reserved.
-          </p>
-          <div className="flex gap-6">
-            <a href="#" className="text-gray-400 hover:text-white transition-colors">
-              <Github className="w-5 h-5" />
-            </a>
-            <a href="#" className="text-gray-400 hover:text-white transition-colors">
-              <Twitter className="w-5 h-5" />
-            </a>
-            <a href="#" className="text-gray-400 hover:text-white transition-colors">
-              <Linkedin className="w-5 h-5" />
-            </a>
-          </div>
+        {/* Bottom Section: Giant Text */}
+        <div className="border-t border-gray-100 pt-12">
+           <h1 className="text-[12vw] leading-none font-bold bg-gradient-to-br from-black to-blue-950 tracking-loose text-center md:text-left select-none bg-clip-text text-transparent">
+             <span className="bg-clip-text text-transparent bg-gradient-to-br from-black to-blue-950">
+               Orbicall
+             </span>
+           </h1>
         </div>
+        
       </div>
     </footer>
   );

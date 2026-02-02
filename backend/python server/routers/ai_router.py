@@ -9,11 +9,19 @@ from models import (
     TranscribeRequest, TranscribeResponse,
     SentimentRequest, SentimentResponse,
     SummaryRequest, SummaryResponse,
-    ChatRequest, ChatResponse
+    ChatRequest, ChatResponse,
+    MeetingEndRequest, MeetingSummaryResponse
 )
 from services.ai_service import (
     process_message,
-    transcribe_audio
+    transcribe_audio,
+    generate_meeting_summary_with_minutes
+)
+from services.meeting_service import (
+    get_or_create_meeting,
+    get_meeting,
+    end_meeting,
+    add_transcript_to_meeting
 )
 
 router = APIRouter(prefix="/api", tags=["AI"])
@@ -122,5 +130,97 @@ async def generate_summary(request: SummaryRequest):
             "transcript_length": len(request.transcript),
             "summary": response
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/meeting/end", response_model=MeetingSummaryResponse)
+async def end_meeting_and_summarize(request: MeetingEndRequest):
+    """
+    End a meeting and generate comprehensive summary with minutes
+    
+    - **room_id**: Room/meeting ID
+    - **participant_name**: Name of participant ending the meeting
+    """
+    try:
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="Groq API key not configured")
+        
+        # Get or create meeting
+        meeting = get_or_create_meeting(request.room_id, request.participant_name)
+        
+        # End the meeting
+        meeting.end_meeting()
+        
+        # Get full transcript
+        transcript = meeting.get_full_transcript()
+        
+        if not transcript or len(transcript.strip()) < 10:
+            return {
+                "success": True,
+                "message": "Meeting ended. No transcript available for summary.",
+                "room_id": request.room_id,
+                "meeting_data": meeting.to_dict(),
+                "summary": "No transcript was recorded during this meeting.",
+                "minutes": {
+                    "meeting_date": meeting.start_time.strftime("%Y-%m-%d"),
+                    "duration": meeting.format_duration(),
+                    "participants": meeting.participants,
+                    "summary": "No transcript available.",
+                    "key_points": [],
+                    "action_items": [],
+                    "decisions": [],
+                    "topics_discussed": []
+                },
+                "key_points": [],
+                "action_items": [],
+                "decisions": [],
+                "topics_discussed": []
+            }
+        
+        # Generate comprehensive summary with minutes
+        summary_data = await generate_meeting_summary_with_minutes(
+            transcript=transcript,
+            participants=meeting.participants,
+            duration=meeting.format_duration()
+        )
+        
+        # Store summary in meeting
+        meeting.summary = summary_data.get("summary", "")
+        meeting.minutes = summary_data.get("minutes", {})
+        
+        return {
+            "success": True,
+            "message": "Meeting ended and summary generated successfully",
+            "room_id": request.room_id,
+            "meeting_data": meeting.to_dict(),
+            "summary": summary_data.get("summary", ""),
+            "minutes": summary_data.get("minutes", {}),
+            "key_points": summary_data.get("key_points", []),
+            "action_items": summary_data.get("action_items", []),
+            "decisions": summary_data.get("decisions", []),
+            "topics_discussed": summary_data.get("topics_discussed", [])
+        }
+        
+    except Exception as e:
+        print(f"[Meeting End] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error ending meeting: {str(e)}")
+
+
+@router.get("/meeting/{room_id}")
+async def get_meeting_data(room_id: str):
+    """Get meeting data by room ID"""
+    try:
+        meeting = get_meeting(room_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        
+        return {
+            "success": True,
+            "meeting_data": meeting.to_dict(),
+            "transcript": meeting.get_full_transcript()
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
