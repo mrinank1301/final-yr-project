@@ -259,9 +259,9 @@ nano .env
 Edit the file. **Minimum you need:**
 
 - `PUBLIC_URL` = `http://YOUR_VM_IP` (e.g. `http://20.123.45.67`) — same IP you use for SSH.
-- `LIVEKIT_URL` = your LiveKit server URL (e.g. `wss://your-livekit.livekit.cloud`).
-- `LIVEKIT_API_KEY` = your LiveKit API key.
-- `LIVEKIT_API_SECRET` = your LiveKit API secret.
+- `LIVEKIT_URL` = `http://YOUR_VM_IP/livekit` (for self-hosted LiveKit in this stack).
+- `LIVEKIT_API_KEY` = a **simple** key: letters, numbers, underscores only (e.g. `apk_myapp`). **Do not use `devkey`** or a base64 string here — the server can reject keys with `/`, `+`, `=`.
+- `LIVEKIT_API_SECRET` = a secret **at least 32 characters**. Use the output of `openssl rand -base64 32` **only for this** (not for the key).
 
 Save: **Ctrl+O**, Enter, then **Ctrl+X**.
 
@@ -352,7 +352,7 @@ That means the app (in your browser) could not reach the **Node** backend to get
 This project runs **self-hosted LiveKit** in Docker. In `~/app/.env` set:
 
 - `LIVEKIT_URL=http://YOUR_VM_IP/livekit` (use your VM’s public IP; or `https://yourdomain.com/livekit` if you use HTTPS).
-- `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` — any secure strings (e.g. random 32-character strings). The same values are used by the Node backend and the LiveKit container.
+- `LIVEKIT_API_KEY` = simple key only (e.g. `apk_myapp`); **do not** put a base64 string here. `LIVEKIT_API_SECRET` = **32+ characters** (e.g. output of `openssl rand -base64 32`). Same values in Node and LiveKit.
 
 **For video to work:** (1) Open **UDP 50000–60000** in the VM’s NSG (Azure Portal → VM → Networking → Add inbound rule). (2) If the LiveKit WebSocket still fails, nginx may not reach the host: on the VM run `docker network inspect app_default | grep -A1 Gateway` to see the bridge gateway; if it’s not `172.17.0.1`, set that in `nginx/nginx.conf` in the `livekit_ws` upstream.
 
@@ -437,6 +437,26 @@ So that every push to `main` deploys to this VM:
   - If you see `{"error":"Server configuration error: Missing LiveKit credentials"}` → set `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_URL` in `~/app/.env`, then `docker compose up -d`.  
   - If connection refused → run `docker compose ps` and `docker compose logs node`.  
   - Open the app at `http://YOUR_VM_IP` (not localhost from your PC).
+
+- **POST /api/token returns 502 (Bad Gateway)**  
+  Nginx could not get a response from the Node backend. On the VM:  
+  1. `docker compose ps` — if `node` is **Exit** or **Restarting**, the Node app is crashing.  
+  2. `docker compose logs node` — check the last lines for errors (e.g. missing env, crash when creating token).  
+  3. Fix `.env`: ensure `LIVEKIT_API_KEY` (simple key) and `LIVEKIT_API_SECRET` (32+ chars) are set. If the secret contains `=` or `#`, put the value in double quotes: `LIVEKIT_API_SECRET="your_secret_here"`.  
+  4. Restart: `docker compose up -d`.  
+  5. If you changed `nginx.conf`, copy it to the VM and reload: `docker compose exec nginx nginx -s reload` or restart the nginx container.
+
+- **"ConnectionError: could not establish signal connection: invalid API key: devkey"**  
+  The app is using the default key `devkey`, which the self-hosted LiveKit server rejects. In `~/app/.env` set **custom** values:  
+  - `LIVEKIT_API_KEY=apk_myapp` (or any **simple** string: letters, numbers, underscores only; not `devkey`).  
+  - `LIVEKIT_API_SECRET=` a secret of **at least 32 characters** (e.g. run `openssl rand -base64 32` and paste **only here**).  
+  Then restart: `docker compose up -d`.
+
+- **"invalid API key: HjHGPOWmhUuk8JvTSyBpScw6Yq1h/2rMlmn5l/zbwmM="** (or any long base64-looking string)  
+  You used the output of `openssl rand -base64 32` for **LIVEKIT_API_KEY**. Use it **only for LIVEKIT_API_SECRET**. In `~/app/.env`:  
+  - `LIVEKIT_API_KEY=apk_myapp` (simple key: letters, numbers, underscores only).  
+  - `LIVEKIT_API_SECRET=` paste your **32+ character** secret here (the base64 string is fine).  
+  Then restart: `docker compose up -d`.
 
 - **Python container “Restarting”**  
   Run `docker compose logs python` to see the crash reason. Fix the error (often missing env). Token/video work without Python; Python is for AI and code execution.
