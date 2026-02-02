@@ -1,5 +1,7 @@
-# Copy to livekit.yaml and set the same API key/secret as in .env (node service).
-# Only needed if you run self-hosted LiveKit (docker-compose livekit service).
+# Optional reference only. You do NOT need this file on the VM.
+# Docker Compose builds LiveKit config from .env (LIVEKIT_CONFIG in docker-compose.yml).
+# Use this file only if you run LiveKit outside Docker (e.g. livekit-server --config livekit.yaml).
+# Set the same api_key and api_secret as in .env (node service).
 port: 7880
 rtc:
   tcp_port: 7881

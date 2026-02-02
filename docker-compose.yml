@@ -70,8 +70,7 @@ services:
           port_range_end: 50100
           use_external_ip: true
         keys:
-          api_key: "${LIVEKIT_API_KEY}"
-          api_secret: "${LIVEKIT_API_SECRET}"
+           ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
     command: --bind 0.0.0.0
     ports:
       - "7880:7880"
