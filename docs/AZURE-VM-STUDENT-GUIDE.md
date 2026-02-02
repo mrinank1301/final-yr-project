@@ -269,14 +269,50 @@ Save: **Ctrl+O**, Enter, then **Ctrl+X**.
 
 ## Part 6: Build and run with Docker Compose
 
+On a small VM (e.g. B2ts_v2 with 4 GB RAM), a full `docker compose build` can **hang or run out of memory**. Do this instead:
+
+### Step A: Add swap (so the build doesn’t run out of RAM)
+
+Run once on the VM:
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Check: `free -h` — you should see about 2G swap.
+
+### Step B: Stop any stuck build
+
+In the SSH window where the build is stuck, press **Ctrl+C** to stop it.
+
+### Step C: Build one service at a time (saves memory)
+
+```bash
+cd ~/app
+docker compose build --no-cache node
+docker compose build --no-cache python
+docker compose build --no-cache frontend
+```
+
+Each step can take several minutes. If one step hangs again, note which service (node/python/frontend) and we can tune that build.
+
+### Step D: Start everything
+
+```bash
+docker compose up -d
+```
+
+---
+
+**If your VM has plenty of RAM (e.g. 8 GB)** you can skip swap and build in one go:
+
 ```bash
 cd ~/app
 docker compose build --no-cache
-```
-
-This can take several minutes (Node, Python, Next.js build).
-
-```bash
 docker compose up -d
 ```
 
@@ -301,6 +337,24 @@ If it doesn’t load:
 - Check firewall: Azure NSG must allow **80** (done in Step 4).
 - Check containers: `docker compose logs -f` (Ctrl+C to stop).
 - Check Nginx: `docker compose logs nginx`.
+
+### If you see “Failed to connect to the server”
+
+That means the app (in your browser) could not reach the **Node** backend to get a video token. Do this:
+
+1. **Check containers:** `docker compose ps` — `node` and `nginx` should be **Up**. If not, run `docker compose up -d` from `~/app`.
+2. **Check .env:** In `~/app/.env` you must have `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` set (see Part 5). The Node container uses these.
+3. **Rebuild frontend once:** The app now uses the same URL you open in the browser (e.g. `http://YOUR_VM_IP`). Rebuild so the change is in the image:  
+   `docker compose build --no-cache frontend && docker compose up -d`
+
+### LiveKit (self-hosted)
+
+This project runs **self-hosted LiveKit** in Docker. In `~/app/.env` set:
+
+- `LIVEKIT_URL=http://YOUR_VM_IP/livekit` (use your VM’s public IP; or `https://yourdomain.com/livekit` if you use HTTPS).
+- `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` — any secure strings (e.g. random 32-character strings). The same values are used by the Node backend and the LiveKit container.
+
+**For video to work**, open **UDP ports 50000–60000** on the VM (Azure NSG): Azure Portal → VM → Networking → Add inbound port rule → Protocol **UDP**, port range **50000–60000**, Source **Any**. This allows WebRTC media.
 
 ---
 

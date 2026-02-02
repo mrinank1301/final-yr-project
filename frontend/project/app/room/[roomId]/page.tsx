@@ -24,8 +24,11 @@ export default function RoomPage() {
   useEffect(() => {
     const fetchToken = async () => {
       try {
+        // Use PUBLIC_URL if set at build, else same origin (so /api/token works behind nginx)
         const apiUrl =
-          process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+          typeof window !== "undefined" && (process.env.NEXT_PUBLIC_API_URL || "").trim() === ""
+            ? window.location.origin
+            : process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
         const response = await fetch(`${apiUrl}/api/token`, {
           method: "POST",
           headers: {

@@ -79,6 +79,23 @@ Copy `.env.example` to `.env` on the VM and fill in values. Summary:
 | `AZURE_SPEECH_KEY` | No | Azure Speech (optional) |
 | `AZURE_SPEECH_REGION` | No | Azure Speech region (optional) |
 
+### "Failed to connect to the server" in the app
+
+This means the **browser** could not reach the **Node** backend at `/api/token`. Check:
+
+1. **Containers running:** `docker compose ps` — `node` and `nginx` must be Up.
+2. **Same-origin:** The frontend now calls the same host you open in the browser (e.g. `http://YOUR_VM_IP`). Rebuild the frontend if you changed anything: `docker compose build --no-cache frontend && docker compose up -d`.
+3. **Node env:** In `.env`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_URL` must be set; the Node container reads them.
+
+### LiveKit (self-hosted by default)
+
+This stack runs **self-hosted LiveKit** in Docker. No separate config file is needed: the LiveKit container uses the same `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` from `.env`.
+
+- In `.env` set:
+  - `LIVEKIT_URL=http://YOUR_VM_IP/livekit` (or `https://yourdomain.com/livekit` if you use TLS).
+  - `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` (any string you choose; e.g. generate random values).
+- Nginx proxies `/livekit` to the LiveKit container. Open **UDP 50000–60000** in the VM’s NSG so WebRTC media works (Azure Portal → VM → Networking → Add inbound rule: UDP, port range 50000–60000).
+
 ## 3. GitHub Actions CI/CD
 
 The workflow `.github/workflows/deploy-azure-vm.yml` runs on every push to `main` and deploys via SSH to the VM.

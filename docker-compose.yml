@@ -52,3 +52,24 @@ services:
       - frontend
       - node
       - python
+      - livekit
+
+  # Self-hosted LiveKit (same keys as Node; config from .env)
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50000
+          port_range_end: 60000
+          use_external_ip: true
+        keys:
+          api_key: "${LIVEKIT_API_KEY}"
+          api_secret: "${LIVEKIT_API_SECRET}"
+    command: --bind 0.0.0.0
+    ports:
+      - "7880:7880"
+      - "50000-60000:50000-60000/udp"
