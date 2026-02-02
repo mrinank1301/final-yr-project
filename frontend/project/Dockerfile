@@ -4,7 +4,8 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci
+# lucide-react@0.294 peer is React 16/17/18 only; project uses React 19. Allow install.
+RUN npm ci --legacy-peer-deps
 
 COPY . .
 # Prevent copying local env (use build args in CI)
