@@ -431,4 +431,14 @@ So that every push to `main` deploys to this VM:
 - **Port 80 not working**  
   Confirm an inbound NSG rule for **TCP port 80** (HTTP) as in Step 4.
 
+- **“Error fetching token” / “Failed to connect to the server”**  
+  On the VM run:  
+  `curl -X POST http://localhost/api/token -H "Content-Type: application/json" -d '{"roomName":"test","participantName":"user"}'`  
+  - If you see `{"error":"Server configuration error: Missing LiveKit credentials"}` → set `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_URL` in `~/app/.env`, then `docker compose up -d`.  
+  - If connection refused → run `docker compose ps` and `docker compose logs node`.  
+  - Open the app at `http://YOUR_VM_IP` (not localhost from your PC).
+
+- **Python container “Restarting”**  
+  Run `docker compose logs python` to see the crash reason. Fix the error (often missing env). Token/video work without Python; Python is for AI and code execution.
+
 If you tell me your exact error message or screen (e.g. “subscription not allowed”, “connection refused”), I can give step-by-step fixes for that.

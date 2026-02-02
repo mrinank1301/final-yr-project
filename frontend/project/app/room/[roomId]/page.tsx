@@ -40,18 +40,31 @@ export default function RoomPage() {
           }),
         });
 
-        if (!response.ok) {
-          throw new Error("Failed to fetch token");
+        let data: { token?: string; url?: string; error?: string; details?: string };
+        try {
+          data = await response.json();
+        } catch {
+          data = {};
         }
 
-        const data = await response.json();
-        setToken(data.token);
-        setServerUrl(data.url);
+        if (!response.ok) {
+          const msg = data?.error || data?.details || `Request failed (${response.status})`;
+          throw new Error(msg);
+        }
+
+        setToken(data.token!);
+        setServerUrl(data.url!);
         setIsLoading(false);
       } catch (err) {
         console.error("Error fetching token:", err);
+        const message =
+          err instanceof Error ? err.message : "Failed to connect to the server.";
         setError(
-          "Failed to connect to the server. Please make sure the backend is running."
+          message.includes("Missing LiveKit")
+            ? "Backend misconfigured: Missing LiveKit credentials. Set LIVEKIT_API_KEY and LIVEKIT_API_SECRET in .env on the server."
+            : message.includes("fetch")
+            ? "Failed to connect to the server. Check that the app URL is correct and the backend is running."
+            : message
         );
         setIsLoading(false);
       }
