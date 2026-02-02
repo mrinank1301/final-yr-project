@@ -354,7 +354,7 @@ This project runs **self-hosted LiveKit** in Docker. In `~/app/.env` set:
 - `LIVEKIT_URL=http://YOUR_VM_IP/livekit` (use your VM’s public IP; or `https://yourdomain.com/livekit` if you use HTTPS).
 - `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` — any secure strings (e.g. random 32-character strings). The same values are used by the Node backend and the LiveKit container.
 
-**For video to work**, open **UDP ports 50000–60000** on the VM (Azure NSG): Azure Portal → VM → Networking → Add inbound port rule → Protocol **UDP**, port range **50000–60000**, Source **Any**. This allows WebRTC media.
+**For video to work:** (1) Open **UDP 50000–60000** in the VM’s NSG (Azure Portal → VM → Networking → Add inbound rule). (2) If the LiveKit WebSocket still fails, nginx may not reach the host: on the VM run `docker network inspect app_default | grep -A1 Gateway` to see the bridge gateway; if it’s not `172.17.0.1`, set that in `nginx/nginx.conf` in the `livekit_ws` upstream.
 
 ---
 
