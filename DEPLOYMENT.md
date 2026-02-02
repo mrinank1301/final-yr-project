@@ -94,7 +94,7 @@ This stack runs **self-hosted LiveKit** in Docker. No separate config file is ne
 - In `.env` set:
   - `LIVEKIT_URL=http://YOUR_VM_IP/livekit` (or `https://yourdomain.com/livekit` if you use TLS).
   - `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` (any string you choose; e.g. generate random values).
-- Nginx proxies `/livekit` to the LiveKit container. Open **UDP 50000–60000** in the VM’s NSG so WebRTC media works (Azure Portal → VM → Networking → Add inbound rule: UDP, port range 50000–60000).
+- Nginx proxies `/livekit` to the LiveKit server. LiveKit runs with **host network** (no UDP port mapping) to avoid Docker proxy errors on small VMs. Open **UDP 50000–60000** in the VM’s NSG so WebRTC media works (Azure Portal → VM → Networking → Add inbound rule: UDP, port range 50000–60000).
 
 ## 3. GitHub Actions CI/CD
 
