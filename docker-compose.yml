@@ -1,77 +1,150 @@
+version: "3.8"
+
 services:
+  # ─────────────────────────────────────────────
+  # Frontend - Next.js
+  # ─────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend/project
       dockerfile: Dockerfile
-      args:
-        # Set to your public URL (e.g. https://yourdomain.com) for API calls from browser
-        NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-}
-        NEXT_PUBLIC_PYTHON_API_URL: ${PUBLIC_URL:-}
-    image: final-yr-project-frontend
+    container_name: frontend
     restart: unless-stopped
+    expose:
+      - "3000"
     environment:
       - NODE_ENV=production
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  node:
+  # ─────────────────────────────────────────────
+  # Node Backend - Express (LiveKit Token Server)
+  # ─────────────────────────────────────────────
+  node-backend:
     build:
       context: ./backend/node server
       dockerfile: Dockerfile
-    image: final-yr-project-node
+    container_name: node-backend
     restart: unless-stopped
+    expose:
+      - "3001"
     environment:
-      - NODE_ENV=production
       - PORT=3001
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      - LIVEKIT_URL=${LIVEKIT_URL}
+      - LIVEKIT_URL=wss://${LIVEKIT_DOMAIN}
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  python:
+  # ─────────────────────────────────────────────
+  # Python Backend - FastAPI (AI + Collaboration)
+  # ─────────────────────────────────────────────
+  python-backend:
     build:
       context: ./backend/python server
       dockerfile: Dockerfile
-    image: final-yr-project-python
+    container_name: python-backend
     restart: unless-stopped
+    expose:
+      - "5000"
     environment:
       - PORT=5000
-      - LIVEKIT_URL=${LIVEKIT_URL}
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - AZURE_SPEECH_KEY=${AZURE_SPEECH_KEY:-}
-      - AZURE_SPEECH_REGION=${AZURE_SPEECH_REGION:-eastasia}
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - LIVEKIT_URL=wss://${LIVEKIT_DOMAIN}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - AZURE_SPEECH_KEY=${AZURE_SPEECH_KEY}
+      - AZURE_SPEECH_REGION=${AZURE_SPEECH_REGION}
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # ─────────────────────────────────────────────
+  # LiveKit Server (self-hosted WebRTC SFU)
+  # ─────────────────────────────────────────────
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: livekit
+    restart: unless-stopped
+    command: >
+      --config /etc/livekit.yaml
+      --node-ip ${PUBLIC_IP}
+      --bind 0.0.0.0
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}
+    expose:
+      - "7880"
+      - "7881"
+    ports:
+      # TURN/UDP must be exposed on host for WebRTC connectivity
+      - "3478:3478/udp"
+      - "5349:5349/tcp"
+      - "50000-50200:50000-50200/udp"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7880"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─────────────────────────────────────────────
+  # Nginx Reverse Proxy (HTTPS + WSS termination)
+  # ─────────────────────────────────────────────
   nginx:
     image: nginx:alpine
+    container_name: nginx
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
     depends_on:
       - frontend
-      - node
-      - python
+      - node-backend
+      - python-backend
       - livekit
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # Self-hosted LiveKit: normal container so nginx can reach livekit:7880 (no gateway)
-  # Small UDP range (101 ports) to avoid docker-proxy errors on some VMs
-  livekit:
-    image: livekit/livekit-server:latest
-    restart: unless-stopped
-    environment:
-      LIVEKIT_CONFIG: |
-        port: 7880
-        rtc:
-          tcp_port: 7881
-          port_range_start: 50000
-          port_range_end: 50100
-          use_external_ip: true
-        keys:
-           ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
-    command: --bind 0.0.0.0
-    ports:
-      - "7880:7880"
-      - "50000-50100:50000-50100/udp"
+  # ─────────────────────────────────────────────
+  # Certbot (SSL certificate management)
+  # ─────────────────────────────────────────────
+  certbot:
+    image: certbot/certbot
+    container_name: certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

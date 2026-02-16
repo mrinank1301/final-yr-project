@@ -139,8 +139,11 @@ export function CollaborativeEditor({
     ydocRef.current = ydoc;
 
     // Get WebSocket URL from environment or default to localhost
-    const pythonServerUrl = process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://localhost:5000";
-    const wsUrl = pythonServerUrl.replace('http', 'ws').replace('https', 'wss');
+    const pythonServerUrl =
+      typeof window !== "undefined" && (process.env.NEXT_PUBLIC_PYTHON_API_URL || "").trim() === ""
+        ? window.location.origin
+        : process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://localhost:5000";
+    const wsUrl = pythonServerUrl.replace('https', 'wss').replace('http', 'ws');
     
     console.log(`[CodeEditor] Connecting to WebSocket: ${wsUrl}/ws/yjs/${roomId}`);
 

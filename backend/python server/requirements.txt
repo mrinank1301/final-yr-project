@@ -2,22 +2,15 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 
-# WebSocket stack (CRITICAL pins)
-websockets==10.4
+# WebSocket backend for uvicorn
 wsproto>=1.2.0
 
 # Env & validation
 python-dotenv==1.0.0
 pydantic==2.5.3
 
-# LiveKit SDK
-livekit==0.12.0
-
-# AI / LLM / Speech
-google-generativeai==0.8.3
+# AI / LLM
 groq>=1.0.0
-SpeechRecognition==3.10.4
-azure-cognitiveservices-speech==1.35.0
 
-# Async HTTP
+# Async HTTP (used for Azure TTS REST API)
 aiohttp==3.9.3

@@ -1,12 +1,11 @@
 __pycache__
 *.pyc
+*.pyo
 .git
 .gitignore
-*.md
+README.md
 .env
-.env.*
-env.txt
-.venv
-venv
 Dockerfile
 .dockerignore
+venv/
+.venv/

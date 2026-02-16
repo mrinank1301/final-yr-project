@@ -348,37 +348,47 @@ async def _handle_text_message(data: dict, client_id: str, websocket: WebSocket)
     user_message = data.get("content", "")
     if not user_message.strip():
         return
-    
-    # Add to history
-    chat_manager.add_to_history(client_id, "user", user_message)
-    
+
     # Send typing indicator
-    await websocket.send_json({
-        "type": "typing",
-        "status": True
-    })
-    
-    # Get AI response with meeting context using Groq
-    response = await process_message(
-        user_message,
-        chat_manager.chat_histories[client_id],
-        chat_manager.meeting_contexts.get(client_id, [])
-    )
-    
-    # Add AI response to history
-    chat_manager.add_to_history(client_id, "assistant", response)
-    
-    # Send response
-    await websocket.send_json({
-        "type": "typing",
-        "status": False
-    })
-    
-    await websocket.send_json({
-        "type": "message",
-        "role": "assistant",
-        "content": response
-    })
+    try:
+        await websocket.send_json({
+            "type": "typing",
+            "status": True
+        })
+    except Exception:
+        return
+
+    try:
+        # Get AI response with meeting context using Groq (history does not include current message yet)
+        response = await process_message(
+            user_message,
+            chat_manager.chat_histories[client_id],
+            chat_manager.meeting_contexts.get(client_id, [])
+        )
+
+        # Add to history after we have the response
+        chat_manager.add_to_history(client_id, "user", user_message)
+        chat_manager.add_to_history(client_id, "assistant", response)
+
+        await websocket.send_json({
+            "type": "typing",
+            "status": False
+        })
+        await websocket.send_json({
+            "type": "message",
+            "role": "assistant",
+            "content": response
+        })
+    except Exception as e:
+        print(f"[AI] Error processing text message: {e}")
+        await websocket.send_json({
+            "type": "typing",
+            "status": False
+        })
+        await websocket.send_json({
+            "type": "error",
+            "content": f"AI failed to respond. Please try again. ({str(e)[:100]})"
+        })
 
 
 async def _handle_audio_message(data: dict, client_id: str, websocket: WebSocket):
@@ -444,13 +454,20 @@ async def _handle_audio_message(data: dict, client_id: str, websocket: WebSocket
                 "type": "error",
                 "content": "Could not transcribe audio. Please try again or type your message."
             })
-            
+
     except Exception as e:
-        print(f"Error processing audio: {e}")
-        await websocket.send_json({
-            "type": "error",
-            "content": "Error processing audio. Please try again."
-        })
+        print(f"[AI] Error processing audio: {e}")
+        try:
+            await websocket.send_json({
+                "type": "typing",
+                "status": False
+            })
+            await websocket.send_json({
+                "type": "error",
+                "content": f"Error processing audio. Please try again. ({str(e)[:80]})"
+            })
+        except Exception:
+            pass
 
 
 async def _handle_meeting_audio(data: dict, client_id: str, websocket: WebSocket):

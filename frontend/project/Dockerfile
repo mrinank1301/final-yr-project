@@ -1,31 +1,34 @@
-# Build stage
-FROM node:20-alpine AS builder
-
+# Stage 1: Install dependencies
+FROM node:20-alpine AS deps
 WORKDIR /app
+COPY package.json package-lock.json* yarn.lock* pnpm-lock.yaml* ./
+RUN \
+  if [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm install --frozen-lockfile; \
+  else npm install; \
+  fi
 
-COPY package.json package-lock.json* ./
-# lucide-react@0.294 peer is React 16/17/18 only; project uses React 19. Allow install.
-RUN npm ci --legacy-peer-deps
-
+# Stage 2: Build the application
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Prevent copying local env (use build args in CI)
-RUN rm -f .env .env.local .env.*.local 2>/dev/null || true
 
-# Build-time env for API URLs (override in docker-compose with PUBLIC_URL)
-ARG NEXT_PUBLIC_API_URL=
-ARG NEXT_PUBLIC_PYTHON_API_URL=
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_PYTHON_API_URL=$NEXT_PUBLIC_PYTHON_API_URL
+# Set build-time env vars (empty = use same-origin in browser)
+ENV NEXT_PUBLIC_API_URL=""
+ENV NEXT_PUBLIC_PYTHON_API_URL=""
+ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN npm run build
 
-# Production stage
+# Stage 3: Production runner
 FROM node:20-alpine AS runner
-
 WORKDIR /app
-
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV HOSTNAME="0.0.0.0"
+ENV PORT=3000
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
@@ -35,10 +38,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
-
 EXPOSE 3000
-
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"]

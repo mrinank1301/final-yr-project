@@ -63,6 +63,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
   const [activeMode, setActiveMode] = useState<'ai' | 'translation'>('ai');
   
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const meetingRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -119,8 +121,11 @@ export function AISidebar({ onClose }: AISidebarProps) {
     const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     clientIdRef.current = clientId;
     
-    const pythonServerUrl = process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://localhost:5000";
-    const wsUrl = `${pythonServerUrl.replace('http', 'ws')}/ws/ai-chat/${clientId}`;
+    const pythonServerUrl =
+      typeof window !== "undefined" && (process.env.NEXT_PUBLIC_PYTHON_API_URL || "").trim() === ""
+        ? window.location.origin
+        : process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://localhost:5000";
+    const wsUrl = `${pythonServerUrl.replace('https', 'wss').replace('http', 'ws')}/ws/ai-chat/${clientId}`;
     
     const connectWebSocket = () => {
       const ws = new WebSocket(wsUrl);
@@ -280,9 +285,11 @@ export function AISidebar({ onClose }: AISidebarProps) {
       
       ws.onclose = () => {
         console.log("Disconnected from AI chat");
-        setIsConnected(false);
-        // Attempt to reconnect after 3 seconds
-        setTimeout(connectWebSocket, 3000);
+        if (mountedRef.current) setIsConnected(false);
+        // Reconnect after 3 seconds only if still mounted
+        if (mountedRef.current) {
+          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000);
+        }
       };
       
       ws.onerror = (error) => {
@@ -292,11 +299,18 @@ export function AISidebar({ onClose }: AISidebarProps) {
       wsRef.current = ws;
     };
     
+    mountedRef.current = true;
     connectWebSocket();
-    
+
     return () => {
+      mountedRef.current = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
       cleanupAllModes();
     };

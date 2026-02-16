@@ -97,7 +97,10 @@ export function CodeEditorSidebar({
     ]);
 
     try {
-      const pythonServerUrl = process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://localhost:5000";
+      const pythonServerUrl =
+        typeof window !== "undefined" && (process.env.NEXT_PUBLIC_PYTHON_API_URL || "").trim() === ""
+          ? window.location.origin
+          : process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://localhost:5000";
       const response = await fetch(`${pythonServerUrl}/api/execute-code`, {
         method: "POST",
         headers: {

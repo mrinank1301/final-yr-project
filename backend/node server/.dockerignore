@@ -2,9 +2,8 @@ node_modules
 dist
 .git
 .gitignore
-*.md
+README.md
 .env
-.env.*
-env.txt
 Dockerfile
 .dockerignore
+npm-debug.log*
