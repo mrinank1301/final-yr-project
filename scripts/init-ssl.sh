@@ -30,8 +30,10 @@ echo "============================================"
 # ── Step 1: Update nginx.conf with actual domain names ──
 echo ""
 echo "[1/4] Configuring nginx with domain names..."
-sed -i "s/DOMAIN_PLACEHOLDER/$DOMAIN/g" nginx/nginx.conf
+# IMPORTANT: Replace LIVEKIT_DOMAIN_PLACEHOLDER first (longer match) to avoid
+# partial replacement when DOMAIN_PLACEHOLDER matches inside it.
 sed -i "s/LIVEKIT_DOMAIN_PLACEHOLDER/$LIVEKIT_DOMAIN/g" nginx/nginx.conf
+sed -i "s/DOMAIN_PLACEHOLDER/$DOMAIN/g" nginx/nginx.conf
 echo "  nginx.conf updated."
 
 # ── Step 2: Update livekit.yaml with domain ──
