@@ -1,6 +1,7 @@
 """
 AI Service - Groq Whisper for transcription + Groq LLM for ultra-fast meeting assistance
 + Azure TTS for text-to-speech translation
++ Token streaming & incremental transcription for real-time Parakeet AI-like experience
 """
 import asyncio
 import tempfile
@@ -8,9 +9,9 @@ import os
 import base64
 import aiohttp
 import json
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, AsyncGenerator
 from datetime import datetime
-from groq import Groq
+from groq import Groq, AsyncGroq
 
 from config import (
     GROQ_API_KEY,
@@ -20,11 +21,13 @@ from config import (
     AZURE_SPEECH_REGION
 )
 
-# Initialize Groq client
+# Initialize Groq clients (sync for transcription, async for streaming LLM)
 groq_client = None
+async_groq_client = None
 if GROQ_API_KEY:
     groq_client = Groq(api_key=GROQ_API_KEY)
-    print("[AI Service] Groq client initialized - Ready for transcription and chat!")
+    async_groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+    print("[AI Service] Groq clients initialized - Sync + Async streaming ready!")
 else:
     print("[AI Service] ERROR: Groq API key not set! Please set GROQ_API_KEY in .env")
 
@@ -119,12 +122,32 @@ async def transcribe_with_groq_whisper(audio_data: bytes, source_language: str =
             
             result = transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
             
-            # Filter out empty or noise-only transcriptions
-            if result and len(result) > 2 and result.lower() not in ['', '.', '...', 'you', 'yeah', 'uh', 'um']:
+            # Filter out empty, noise-only, and Whisper hallucination transcriptions
+            # Whisper often hallucinates these short phrases on silence/noise
+            hallucinations = {
+                '', '.', '..', '...', 'you', 'yeah', 'uh', 'um', 'hmm', 'ah', 'oh',
+                'thank you.', 'thanks.', 'thank you', 'thanks',
+                'hello.', 'hello', 'hi.', 'hi', 'hey.', 'hey',
+                'bye.', 'bye', 'goodbye.', 'goodbye',
+                'yes.', 'yes', 'no.', 'no', 'okay.', 'okay', 'ok.', 'ok',
+                'cheers.', 'cheers', 'good.', 'good',
+                'hei!', 'hei', 'olá!', 'olá', 'ciao.', 'ciao',
+                'good morning.', 'good morning', 'good night.', 'good night',
+                'thank you for watching.', 'thanks for watching.',
+                'please subscribe.', 'like and subscribe.',
+                'see you next time.', 'see you.',
+                'subtitles by', 'translated by', 'amara.org',
+            }
+            
+            result_check = result.lower().strip().rstrip('.')
+            if (result and len(result) > 2 
+                and result.lower() not in hallucinations 
+                and result_check not in hallucinations
+                and len(result.split()) >= 2):  # Require at least 2 words
                 print(f"[Whisper] SUCCESS: {result}")
                 return result
             else:
-                print(f"[Whisper] No meaningful speech detected")
+                print(f"[Whisper] Filtered (hallucination/noise): '{result}'")
                 return ""
                 
         finally:
@@ -210,6 +233,93 @@ async def process_with_groq(
     except Exception as e:
         print(f"[Groq LLM] Exception: {e}")
         return "Sorry, I encountered an error. Please try again."
+
+
+# ==================== Streaming LLM Response ====================
+
+async def process_with_groq_streaming(
+    message: str,
+    chat_history: Optional[List[dict]] = None,
+    meeting_context: Optional[List[str]] = None
+) -> AsyncGenerator[str, None]:
+    """
+    Stream LLM response token-by-token using Groq's async streaming API.
+    Yields individual tokens as they are generated for real-time display.
+    This is the key to Parakeet AI-like fast responses.
+    """
+    if not async_groq_client:
+        print("[Groq Stream] ERROR: No async client available")
+        yield "AI service not configured. Please set GROQ_API_KEY."
+        return
+    
+    try:
+        messages = [
+            {"role": "system", "content": AI_SYSTEM_INSTRUCTION}
+        ]
+        
+        if meeting_context and len(meeting_context) > 0:
+            recent_context = meeting_context[-8:]
+            context_text = "\n".join(recent_context)
+            messages.append({
+                "role": "system",
+                "content": f"Recent conversation:\n{context_text}"
+            })
+        
+        if chat_history:
+            for msg in chat_history[-5:]:
+                role = "user" if msg["role"] == "user" else "assistant"
+                messages.append({"role": role, "content": msg["content"]})
+        
+        messages.append({"role": "user", "content": message})
+        
+        # Try each model with streaming
+        for model in GROQ_MODELS:
+            try:
+                print(f"[Groq Stream] Streaming with model: {model}")
+                stream = await async_groq_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=400,
+                    stream=True,
+                )
+                
+                token_count = 0
+                async for chunk in stream:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        token_count += 1
+                        yield content
+                
+                print(f"[Groq Stream] Streamed {token_count} tokens successfully")
+                return
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[Groq Stream] Error with {model}: {error_msg[:100]}")
+                if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                    continue
+                if "rate" in error_msg.lower():
+                    await asyncio.sleep(0.5)
+                    continue
+                continue
+        
+        yield "I'm having trouble responding right now. Please try again."
+        
+    except Exception as e:
+        print(f"[Groq Stream] Exception: {e}")
+        yield "Sorry, I encountered an error. Please try again."
+
+
+async def stream_message(
+    message: str,
+    chat_history: Optional[List[dict]] = None,
+    meeting_context: Optional[List[str]] = None
+) -> AsyncGenerator[str, None]:
+    """Main streaming message function - yields tokens from Groq LLM"""
+    print(f"[Stream] Message: {message[:50]}...")
+    async for token in process_with_groq_streaming(message, chat_history, meeting_context):
+        yield token
 
 
 # ==================== Translation Function ====================
@@ -413,9 +523,9 @@ async def translate_and_speak(
 
 # ==================== Main API Functions ====================
 
-async def transcribe_audio(audio_data: bytes, source_language: str = None) -> str:
-    """Main transcription function - uses Groq Whisper. Auto-detects language if not specified."""
-    print(f"[Transcribe] Processing {len(audio_data)} bytes of audio (lang: {source_language or 'auto-detect'})")
+async def transcribe_audio(audio_data: bytes, source_language: str = "en") -> str:
+    """Main transcription function - uses Groq Whisper. Defaults to English."""
+    print(f"[Transcribe] Processing {len(audio_data)} bytes (lang: {source_language})")
     return await transcribe_with_groq_whisper(audio_data, source_language)
 
 

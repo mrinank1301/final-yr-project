@@ -11,6 +11,7 @@ pydantic==2.5.3
 
 # AI / LLM
 groq>=1.0.0
+openai>=1.0.0
 
-# Async HTTP (used for Azure TTS REST API)
+# Async HTTP (used for Azure TTS REST API + OpenAI Realtime API WebSocket client)
 aiohttp==3.9.3

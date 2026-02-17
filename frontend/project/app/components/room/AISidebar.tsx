@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, X, Send, Mic, MicOff, Loader2, Volume2, VolumeX, Radio, Headphones, Languages } from "lucide-react";
+import { Bot, X, Send, Mic, MicOff, Loader2, Volume2, VolumeX, Radio, Headphones, Languages, Zap } from "lucide-react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRemoteParticipants } from "@livekit/components-react";
 import { Track } from "livekit-client";
@@ -43,8 +43,62 @@ const SUPPORTED_LANGUAGES = [
   { code: "th", name: "Thai" },
 ];
 
+// ---------------------------------------------------------------------------
+// Audio utility functions (PCM conversion for OpenAI Realtime API)
+// ---------------------------------------------------------------------------
+
+/**
+ * Downsample a Float32Array from fromRate to toRate using linear interpolation.
+ * Used to convert browser's native 48kHz to OpenAI's required 24kHz.
+ */
+function downsampleTo24k(buffer: Float32Array, fromRate: number): Float32Array {
+  const toRate = 24000;
+  if (fromRate === toRate) return buffer;
+  const ratio = fromRate / toRate;
+  const newLen = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i++) {
+    const srcIdx = i * ratio;
+    const lo = Math.floor(srcIdx);
+    const hi = Math.min(lo + 1, buffer.length - 1);
+    const frac = srcIdx - lo;
+    result[i] = buffer[lo] * (1 - frac) + buffer[hi] * frac;
+  }
+  return result;
+}
+
+/**
+ * Convert Float32 PCM → Int16 PCM → base64 string.
+ * OpenAI Realtime API expects little-endian PCM16.
+ */
+function float32ToPCM16Base64(float32: Float32Array): string {
+  const buf = new ArrayBuffer(float32.length * 2);
+  const view = new DataView(buf);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    // Write as little-endian Int16 explicitly (guarantees byte order)
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary);
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function AISidebar({ onClose }: AISidebarProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Tab system: AI Assistant and Translation have separate message histories
+  const [currentTab, setCurrentTab] = useState<'ai' | 'translation'>('ai');
+  const [aiMessages, setAiMessages] = useState<Message[]>([]);
+  const [translationMessages, setTranslationMessages] = useState<Message[]>([]);
+
   const [inputText, setInputText] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -52,15 +106,19 @@ export function AISidebar({ onClose }: AISidebarProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListeningToMeeting, setIsListeningToMeeting] = useState(false);
   
+  // Streaming state - for real-time token-by-token display
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [streamingHeard, setStreamingHeard] = useState("");
+  const streamingContentRef = useRef<string>("");
+  const streamingPrefixRef = useRef<string>("");
+  
   // Live Translation state
   const [isLiveTranslating, setIsLiveTranslating] = useState(false);
   const [showLanguageSelector, setShowLanguageSelector] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<string>("");
-  const [audioEnabled, setAudioEnabled] = useState(true); // For translation audio output
-  const audioEnabledRef = useRef(true); // Ref to avoid hook dependency issues
-  
-  // Active feature mode: 'ai' | 'translation'
-  const [activeMode, setActiveMode] = useState<'ai' | 'translation'>('ai');
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const audioEnabledRef = useRef(true);
   
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -75,31 +133,200 @@ export function AISidebar({ onClose }: AISidebarProps) {
   const meetingStreamRef = useRef<MediaStream | null>(null);
   const messageIdCounter = useRef<number>(0);
   
-  // Generate unique message ID
+  // Token batching for smoother rendering
+  const tokenBatchRef = useRef<string>("");
+  const tokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // PCM streaming refs (AI Assistant mode — OpenAI Realtime API)
+  // Every Web Audio node must be stored in a ref to prevent garbage collection
+  const pcmAudioCtxRef = useRef<AudioContext | null>(null);
+  const pcmProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const pcmSourceNodesRef = useRef<MediaStreamAudioSourceNode[]>([]);
+  const pcmGainRef = useRef<GainNode | null>(null);
+  const isStreamingPCMRef = useRef(false);
+  
   const generateMessageId = () => {
     messageIdCounter.current += 1;
     return `msg_${Date.now()}_${messageIdCounter.current}`;
   };
 
-  // Get remote participants for meeting audio
   const remoteParticipants = useRemoteParticipants();
 
-  // Scroll to bottom when new messages arrive
+  // Derive which messages to show based on current tab
+  const messages = currentTab === 'ai' ? aiMessages : translationMessages;
+
+  // Scroll to bottom when new messages arrive or streaming updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [aiMessages, translationMessages, streamingContent]);
 
-  // Keep audioEnabled ref in sync with state
   useEffect(() => {
     audioEnabledRef.current = audioEnabled;
   }, [audioEnabled]);
+
+  // ------------------------------------------------------------------
+  // PCM streaming for AI Assistant (OpenAI Realtime API)
+  // ------------------------------------------------------------------
+
+  /** Tear down ScriptProcessorNode and associated audio graph. */
+  const stopPCMStreaming = useCallback(() => {
+    isStreamingPCMRef.current = false;
+
+    if (pcmProcessorRef.current) {
+      try { pcmProcessorRef.current.disconnect(); } catch { /* ok */ }
+      pcmProcessorRef.current.onaudioprocess = null;
+      pcmProcessorRef.current = null;
+    }
+    pcmSourceNodesRef.current.forEach((src) => {
+      try { src.disconnect(); } catch { /* ok */ }
+    });
+    pcmSourceNodesRef.current = [];
+    if (pcmGainRef.current) {
+      try { pcmGainRef.current.disconnect(); } catch { /* ok */ }
+      pcmGainRef.current = null;
+    }
+    if (pcmAudioCtxRef.current && pcmAudioCtxRef.current.state !== "closed") {
+      pcmAudioCtxRef.current.close().catch(() => {});
+      pcmAudioCtxRef.current = null;
+    }
+    console.log("[PCM] Streaming stopped, all nodes cleaned up");
+  }, []);
+
+  /**
+   * Set up continuous PCM16 24kHz mono audio streaming from remote
+   * participant tracks to the backend via WebSocket.
+   *
+   * Pipeline (simplified for reliability):
+   *   participant tracks → source nodes → ScriptProcessor → silent gain → destination
+   *   (multiple sources mix automatically at the processor input)
+   *
+   * Key: Always use browser's NATIVE sample rate (48kHz) and resample
+   * to 24kHz in JavaScript. Do NOT create AudioContext at 24kHz — it
+   * causes garbled audio when WebRTC tracks at 48kHz are connected.
+   */
+  const startPCMStreaming = useCallback(async () => {
+    stopPCMStreaming();
+
+    const audioTracks: MediaStreamTrack[] = [];
+    remoteParticipants.forEach((participant) => {
+      const pub = participant.getTrackPublication(Track.Source.Microphone);
+      const track = pub?.track?.mediaStreamTrack;
+      if (track && track.readyState === "live") {
+        audioTracks.push(track);
+      }
+    });
+
+    if (audioTracks.length === 0) {
+      console.warn("[PCM] No remote audio tracks available");
+      return;
+    }
+
+    // Always use browser's native sample rate (usually 48kHz).
+    // We resample to 24kHz ourselves — this is MORE reliable than
+    // asking the browser to resample WebRTC tracks.
+    const ctx = new AudioContext();
+    pcmAudioCtxRef.current = ctx;
+
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
+
+    const nativeSR = ctx.sampleRate;
+    console.log(`[PCM] AudioContext sample rate: ${nativeSR}Hz`);
+
+    // ScriptProcessor: 4096 samples at 48kHz ≈ 85ms, mono in, mono out
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+
+    // Connect ALL participant tracks directly to the processor.
+    // Web Audio mixes multiple inputs automatically.
+    const sourceNodes: MediaStreamAudioSourceNode[] = [];
+    audioTracks.forEach((track) => {
+      try {
+        const src = ctx.createMediaStreamSource(new MediaStream([track]));
+        src.connect(processor);
+        sourceNodes.push(src);
+      } catch (e) {
+        console.warn("[PCM] Could not connect track:", e);
+      }
+    });
+    pcmSourceNodesRef.current = sourceNodes;
+
+    // ScriptProcessor must be connected to ctx.destination to fire.
+    // Use a silent GainNode so we don't play audio twice.
+    const silentGain = ctx.createGain();
+    silentGain.gain.value = 0;
+    processor.connect(silentGain);
+    silentGain.connect(ctx.destination);
+
+    pcmGainRef.current = silentGain;
+    pcmProcessorRef.current = processor;
+
+    let chunkCount = 0;
+
+    processor.onaudioprocess = (e) => {
+      if (!isStreamingPCMRef.current) return;
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+      const raw = e.inputBuffer.getChannelData(0);
+
+      // Always resample from native rate to 24kHz
+      const samples24k = downsampleTo24k(raw, nativeSR);
+
+      // Convert to PCM16 little-endian and base64 encode
+      const b64 = float32ToPCM16Base64(samples24k);
+
+      wsRef.current.send(JSON.stringify({
+        type: "audio_stream",
+        data: b64,
+      }));
+
+      chunkCount++;
+      // Log periodically + audio level for debugging
+      if (chunkCount % 60 === 1) {
+        let maxAmp = 0;
+        for (let i = 0; i < raw.length; i++) {
+          const a = Math.abs(raw[i]);
+          if (a > maxAmp) maxAmp = a;
+        }
+        console.log(`[PCM] chunk #${chunkCount}, peak=${maxAmp.toFixed(4)}, ` +
+          `in=${raw.length}@${nativeSR} -> out=${samples24k.length}@24000`);
+      }
+    };
+
+    isStreamingPCMRef.current = true;
+    console.log(`[PCM] Streaming: ${sourceNodes.length} track(s), ${nativeSR}Hz -> 24kHz`);
+  }, [remoteParticipants, stopPCMStreaming]);
+
+  // Start / stop PCM streaming when AI Assistant mode toggles
+  useEffect(() => {
+    if (isListeningToMeeting && isConnected) {
+      startPCMStreaming();
+    } else {
+      stopPCMStreaming();
+    }
+    return () => {
+      stopPCMStreaming();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isListeningToMeeting, isConnected, startPCMStreaming]);
 
   // Full cleanup function (only for unmount)
   const cleanupAllModes = useCallback(() => {
     setIsListeningToMeeting(false);
     setIsLiveTranslating(false);
-    setActiveMode('ai');
     setTargetLanguage("");
+    setIsStreaming(false);
+    setStreamingContent("");
+    setStreamingHeard("");
+    streamingContentRef.current = "";
+    
+    if (tokenFlushTimerRef.current) {
+      clearTimeout(tokenFlushTimerRef.current);
+      tokenFlushTimerRef.current = null;
+    }
+
+    // Stop PCM streaming
+    stopPCMStreaming();
     
     if (meetingRecorderRef.current && meetingRecorderRef.current.state !== "inactive") {
       try {
@@ -113,11 +340,10 @@ export function AISidebar({ onClose }: AISidebarProps) {
       meetingStreamRef.current.getTracks().forEach(track => track.stop());
       meetingStreamRef.current = null;
     }
-  }, []);
+  }, [stopPCMStreaming]);
 
   // Connect to WebSocket
   useEffect(() => {
-    // Generate client ID
     const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     clientIdRef.current = clientId;
     
@@ -131,7 +357,7 @@ export function AISidebar({ onClose }: AISidebarProps) {
       const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
-        console.log("Connected to AI chat");
+        console.log("Connected to AI chat (hybrid realtime mode)");
         setIsConnected(true);
       };
       
@@ -140,8 +366,79 @@ export function AISidebar({ onClose }: AISidebarProps) {
           const data = JSON.parse(event.data);
           
           switch (data.type) {
+            // ====== STREAMING TOKEN MESSAGES ======
+            case "stream_start":
+              setIsStreaming(true);
+              setIsTyping(false);
+              setIsProcessing(false);
+              streamingPrefixRef.current = data.prefix || "";
+              streamingContentRef.current = data.prefix || "";
+              tokenBatchRef.current = "";
+              setStreamingContent(data.prefix || "");
+              setStreamingHeard(data.heard || "");
+              break;
+              
+            case "stream_token":
+              tokenBatchRef.current += data.token;
+              if (tokenFlushTimerRef.current) {
+                clearTimeout(tokenFlushTimerRef.current);
+              }
+              tokenFlushTimerRef.current = setTimeout(() => {
+                if (tokenBatchRef.current) {
+                  streamingContentRef.current += tokenBatchRef.current;
+                  setStreamingContent(streamingContentRef.current);
+                  tokenBatchRef.current = "";
+                }
+              }, 30);
+              break;
+              
+            case "stream_end": {
+              if (tokenFlushTimerRef.current) {
+                clearTimeout(tokenFlushTimerRef.current);
+                tokenFlushTimerRef.current = null;
+              }
+              if (tokenBatchRef.current) {
+                streamingContentRef.current += tokenBatchRef.current;
+                tokenBatchRef.current = "";
+              }
+              
+              const heardText = data.heard || "";
+              const isQ = data.is_question || false;
+              
+              setIsStreaming(false);
+              setStreamingContent("");
+              setStreamingHeard("");
+              streamingContentRef.current = "";
+              streamingPrefixRef.current = "";
+              
+              const finalContent = heardText
+                ? `**${isQ ? "Q" : "Heard"}:** *${heardText}*\n\n${data.full_content}`
+                : data.full_content;
+              
+              // AI responses always go to the AI tab
+              setAiMessages((prev) => [
+                ...prev,
+                {
+                  id: generateMessageId(),
+                  role: "assistant",
+                  content: finalContent,
+                },
+              ]);
+              break;
+            }
+
+            // ====== REALTIME API EVENTS (AI Assistant) ======
+            case "heard":
+              setStreamingHeard(data.transcript || "");
+              break;
+
+            case "speech_started":
+              break;
+              
+            // ====== REGULAR MESSAGES ======
             case "message":
-              setMessages((prev) => [
+              // Welcome / general messages go to AI tab
+              setAiMessages((prev) => [
                 ...prev,
                 {
                   id: generateMessageId(),
@@ -152,8 +449,7 @@ export function AISidebar({ onClose }: AISidebarProps) {
               break;
               
             case "transcription":
-              // Show the transcribed speech
-              setMessages((prev) => [
+              setAiMessages((prev) => [
                 ...prev,
                 {
                   id: generateMessageId(),
@@ -164,9 +460,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
               ]);
               break;
               
-            case "meeting_transcription":
-              // Show meeting transcription (from other participants)
-              setMessages((prev) => [
+            case "live_transcription":
+              setAiMessages((prev) => [
                 ...prev,
                 {
                   id: generateMessageId(),
@@ -178,37 +473,9 @@ export function AISidebar({ onClose }: AISidebarProps) {
               ]);
               break;
               
-            case "question_detected":
-              // A question was detected and AI is answering
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: generateMessageId(),
-                  role: "meeting",
-                  content: `❓ Question: ${data.question}`,
-                  speaker: "Question Detected",
-                  isTranscription: true,
-                },
-              ]);
-              break;
-              
-            case "speech_detected":
-              // Speech detected (not a question) and AI is responding
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: generateMessageId(),
-                  role: "meeting",
-                  content: `💬 ${data.question}`,
-                  speaker: "Speech Detected",
-                  isTranscription: true,
-                },
-              ]);
-              break;
-              
             case "live_translation":
-              // Live translation result with audio
-              setMessages((prev) => [
+              // Translation messages go to the Translation tab
+              setTranslationMessages((prev) => [
                 ...prev,
                 {
                   id: generateMessageId(),
@@ -221,7 +488,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
                 },
               ]);
               
-              // Play the translated audio if available and audio is enabled
               if (data.audio && data.has_audio && audioEnabledRef.current) {
                 try {
                   const audioBlob = new Blob(
@@ -231,14 +497,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
                   const audioUrl = URL.createObjectURL(audioBlob);
                   const audio = new Audio(audioUrl);
                   audio.volume = 1.0;
-                  audio.play().then(() => {
-                    console.log('[Translation] Playing audio...');
-                  }).catch(e => console.error('Audio playback error:', e));
-                  // Clean up URL after playback
-                  audio.onended = () => {
-                    URL.revokeObjectURL(audioUrl);
-                    console.log('[Translation] Audio finished');
-                  };
+                  audio.play().catch(e => console.error('Audio playback error:', e));
+                  audio.onended = () => URL.revokeObjectURL(audioUrl);
                 } catch (e) {
                   console.error('Error playing translation audio:', e);
                 }
@@ -252,25 +512,29 @@ export function AISidebar({ onClose }: AISidebarProps) {
             case "status":
               if (data.status === "transcribing") {
                 setIsProcessing(true);
-              } else if (data.status === "listening") {
-                // Meeting listening status update
               }
               break;
               
             case "error":
-              setMessages((prev) => [
+              // Errors go to AI tab (most common source)
+              setAiMessages((prev) => [
                 ...prev,
                 {
                   id: generateMessageId(),
                   role: "assistant",
-                  content: `⚠️ ${data.content}`,
+                  content: data.content,
                 },
               ]);
               setIsProcessing(false);
+              setIsStreaming(false);
               break;
               
             case "cleared":
-              setMessages([]);
+              setAiMessages([]);
+              setTranslationMessages([]);
+              setIsStreaming(false);
+              setStreamingContent("");
+              setStreamingHeard("");
               break;
           }
           
@@ -286,7 +550,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
       ws.onclose = () => {
         console.log("Disconnected from AI chat");
         if (mountedRef.current) setIsConnected(false);
-        // Reconnect after 3 seconds only if still mounted
         if (mountedRef.current) {
           reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000);
         }
@@ -316,41 +579,31 @@ export function AISidebar({ onClose }: AISidebarProps) {
     };
   }, [cleanupAllModes]);
 
-  // Capture and send meeting audio periodically (shared by all modes)
+  // ------------------------------------------------------------------
+  // Translation mode: chunked MediaRecorder capture (unchanged)
+  // ------------------------------------------------------------------
+
   const captureMeetingAudio = useCallback(async () => {
-    // Check if any capture mode is active
-    const isCapturing = isListeningToMeeting || isLiveTranslating;
-    if (!isCapturing || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    if (!isLiveTranslating || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
     }
 
     try {
-      console.log(`[Audio] Checking ${remoteParticipants.length} remote participants for audio... (mode: ${activeMode})`);
-      
-      // Collect all active audio tracks from remote participants
       const audioTracks: MediaStreamTrack[] = [];
       
       remoteParticipants.forEach((participant) => {
-        console.log(`[Audio] Participant: ${participant.identity}`);
         const audioTrack = participant.getTrackPublication(Track.Source.Microphone);
         const track = audioTrack?.track?.mediaStreamTrack;
         
         if (track && track.readyState === "live") {
           audioTracks.push(track);
-          console.log(`[Audio] Added live audio track from ${participant.identity}`);
-        } else {
-          console.log(`[Audio] Track not available or not live for ${participant.identity}`);
         }
       });
 
       if (audioTracks.length === 0) {
-        console.log("[Audio] No remote audio tracks available - need another participant with mic enabled");
         return;
       }
-      
-      console.log(`[Audio] Capturing audio from ${audioTracks.length} track(s) using Web Audio API...`);
 
-      // Create or resume AudioContext
       if (!audioContextRef.current || audioContextRef.current.state === "closed") {
         audioContextRef.current = new AudioContext();
       }
@@ -360,11 +613,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
       }
       
       const audioContext = audioContextRef.current;
-      
-      // Create a destination node for recording
       const destination = audioContext.createMediaStreamDestination();
       
-      // Connect each audio track through the AudioContext
       audioTracks.forEach((track) => {
         try {
           const sourceStream = new MediaStream([track]);
@@ -375,29 +625,25 @@ export function AISidebar({ onClose }: AISidebarProps) {
         }
       });
       
-      // Use the destination stream for recording (this stream is always recordable)
       const recordableStream = destination.stream;
       meetingStreamRef.current = recordableStream;
 
-      // Find supported mimeType
       const mimeTypes = [
         "audio/webm;codecs=opus",
         "audio/webm",
         "audio/ogg;codecs=opus",
         "audio/mp4",
-        ""  // Default (let browser choose)
+        ""
       ];
       
       let selectedMimeType = "";
       for (const mimeType of mimeTypes) {
         if (mimeType === "" || MediaRecorder.isTypeSupported(mimeType)) {
           selectedMimeType = mimeType;
-          console.log(`[Audio] Using mimeType: ${mimeType || "default"}`);
           break;
         }
       }
 
-      // Create MediaRecorder with supported mimeType
       const recorderOptions: MediaRecorderOptions = {};
       if (selectedMimeType) {
         recorderOptions.mimeType = selectedMimeType;
@@ -413,8 +659,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
         }
       };
 
-      // Capture current mode for closure
-      const currentMode = activeMode;
       const currentTargetLang = targetLanguage;
 
       mediaRecorder.onstop = async () => {
@@ -423,70 +667,44 @@ export function AISidebar({ onClose }: AISidebarProps) {
         const blobType = selectedMimeType || "audio/webm";
         const audioBlob = new Blob(meetingAudioChunksRef.current, { type: blobType });
         
-        // Only send if blob has meaningful size (more than ~1kb means actual audio)
         if (audioBlob.size > 1000) {
-          console.log(`[Audio] Sending ${audioBlob.size} bytes of audio (mode: ${currentMode})...`);
           const reader = new FileReader();
           reader.onloadend = () => {
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               const base64Audio = (reader.result as string).split(",")[1];
-              
-              // Send different message types based on active mode
-              if (currentMode === 'translation') {
-                wsRef.current.send(JSON.stringify({
-                  type: "live_translation_audio",
-                  data: base64Audio,
-                  target_language: currentTargetLang,
-                }));
-              } else {
-                // Default: AI meeting mode
-                wsRef.current.send(JSON.stringify({
-                  type: "meeting_audio",
-                  data: base64Audio,
-                }));
-              }
-              console.log(`[Audio] Audio sent successfully (mode: ${currentMode})`);
+              wsRef.current.send(JSON.stringify({
+                type: "live_translation_audio",
+                data: base64Audio,
+                target_language: currentTargetLang,
+              }));
             }
           };
           reader.readAsDataURL(audioBlob);
-        } else {
-          console.log(`[Audio] Audio blob too small (${audioBlob.size} bytes), skipping`);
         }
       };
 
       meetingRecorderRef.current = mediaRecorder;
       mediaRecorder.start();
 
-      // Different recording durations based on mode:
-      // - Translation: 3 seconds (need fast response for real-time feel)
-      // - AI Assistant: 5 seconds (need full questions)
-      const recordDuration = currentMode === 'translation' ? 3000 : 5000;
-      
+      // 2.5s chunks for translation
       setTimeout(() => {
         if (mediaRecorder.state !== "inactive") {
           mediaRecorder.stop();
         }
-      }, recordDuration);
+      }, 2500);
 
     } catch (error) {
       console.error("Error capturing audio:", error);
     }
-  }, [isListeningToMeeting, isLiveTranslating, activeMode, targetLanguage, remoteParticipants]);
+  }, [isLiveTranslating, targetLanguage, remoteParticipants]);
 
-  // Set up interval for audio capture (shared by all modes)
+  // Interval for translation mode only
   useEffect(() => {
     let intervalId: NodeJS.Timeout | null = null;
-    
-    const isCapturing = isListeningToMeeting || isLiveTranslating;
 
-    if (isCapturing && isConnected) {
-      // Different intervals based on mode (recording time + 0.5s gap)
-      const captureInterval = isLiveTranslating ? 3500 : 5500;  // 3s or 5s record + 0.5s gap
-      
-      // Start capturing immediately
+    if (isLiveTranslating && isConnected) {
       captureMeetingAudio();
-      // Then capture at the mode-specific interval
-      intervalId = setInterval(captureMeetingAudio, captureInterval);
+      intervalId = setInterval(captureMeetingAudio, 3000);
     }
 
     return () => {
@@ -494,9 +712,8 @@ export function AISidebar({ onClose }: AISidebarProps) {
         clearInterval(intervalId);
       }
     };
-  }, [isListeningToMeeting, isLiveTranslating, isConnected, captureMeetingAudio]);
+  }, [isLiveTranslating, isConnected, captureMeetingAudio]);
 
-  // Helper to stop recorder without resetting states
   const stopRecorderOnly = useCallback(() => {
     if (meetingRecorderRef.current && meetingRecorderRef.current.state !== "inactive") {
       try {
@@ -521,69 +738,62 @@ export function AISidebar({ onClose }: AISidebarProps) {
   };
 
   const startMeetingListening = () => {
-    // Stop recorder and other modes
     stopRecorderOnly();
     setIsLiveTranslating(false);
     
-    // Set AI mode
     setIsListeningToMeeting(true);
-    setActiveMode('ai');
     
-    // Send status to server
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: "start_listening",
       }));
     }
     
-    setMessages((prev) => [
+    setCurrentTab('ai');
+    setAiMessages((prev) => [
       ...prev,
       {
         id: generateMessageId(),
         role: "assistant",
         content: remoteParticipants.length > 0 
-          ? `🎧 **AI Assistant Active!**\n\nCapturing audio from ${remoteParticipants.length} participant(s).\n\n• I'll transcribe what they say\n• Instant AI responses via Groq\n• Perfect for interviews!`
-          : `⚠️ **No Other Participants Yet**\n\nI need another person in the call to listen to their audio.\n\n• Open this room in another browser/tab\n• Or invite someone to join\n• Make sure they enable their microphone`,
+          ? `**AI Assistant Active (Realtime)**\n\nStreaming audio from ${remoteParticipants.length} participant(s) directly to AI. Responses appear as they speak.`
+          : `**No Other Participants Yet**\n\nI need another person in the call to listen to.\n\n- Open this room in another browser/tab\n- Or invite someone to join\n- Make sure they enable their microphone`,
       },
     ]);
   };
 
   const stopMeetingListening = useCallback(() => {
+    stopPCMStreaming();
     stopRecorderOnly();
     setIsListeningToMeeting(false);
     
-    // Send status to server
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: "stop_listening",
       }));
     }
-  }, [stopRecorderOnly]);
+  }, [stopPCMStreaming, stopRecorderOnly]);
 
   // ==================== Live Translation Mode ====================
   const toggleLiveTranslation = () => {
     if (isLiveTranslating) {
       stopLiveTranslation();
     } else {
-      // Show language selector first
       setShowLanguageSelector(true);
     }
   };
 
   const startLiveTranslation = (selectedLanguage: string) => {
-    // Stop recorder and other modes
     stopRecorderOnly();
+    stopPCMStreaming();
     setIsListeningToMeeting(false);
     
-    // Set translation mode
     setTargetLanguage(selectedLanguage);
     setIsLiveTranslating(true);
-    setActiveMode('translation');
     setShowLanguageSelector(false);
     
     const langName = SUPPORTED_LANGUAGES.find(l => l.code === selectedLanguage)?.name || selectedLanguage;
     
-    // Send status to server
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: "start_translation",
@@ -591,14 +801,15 @@ export function AISidebar({ onClose }: AISidebarProps) {
       }));
     }
     
-    setMessages((prev) => [
+    setCurrentTab('translation');
+    setTranslationMessages((prev) => [
       ...prev,
       {
         id: generateMessageId(),
         role: "assistant",
         content: remoteParticipants.length > 0 
-          ? `🌐 **Live Translation Active!**\n\nTranslating to **${langName}** from ${remoteParticipants.length} participant(s).\n\n• Real-time speech translation\n• Original + translated text shown\n• Perfect for multilingual meetings!`
-          : `⚠️ **No Other Participants Yet**\n\nI need another person in the call to translate.\n\n• Open this room in another browser/tab\n• Or invite someone to join\n• Make sure they enable their microphone`,
+          ? `**Live Translation Active!**\n\nTranslating to **${langName}** from ${remoteParticipants.length} participant(s).`
+          : `**No Other Participants Yet**\n\nI need another person in the call to translate.\n\n- Open this room in another browser/tab\n- Or invite someone to join\n- Make sure they enable their microphone`,
       },
     ]);
   };
@@ -608,7 +819,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     setIsLiveTranslating(false);
     setTargetLanguage("");
     
-    // Send status to server
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: "stop_translation",
@@ -616,14 +826,14 @@ export function AISidebar({ onClose }: AISidebarProps) {
     }
   }, [stopRecorderOnly]);
 
-  // Send text message
+  // Send text message (always goes to AI tab)
   const sendMessage = useCallback(() => {
     if (!inputText.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
     }
     
-    // Add user message to UI immediately
-    setMessages((prev) => [
+    setCurrentTab('ai');
+    setAiMessages((prev) => [
       ...prev,
       {
         id: generateMessageId(),
@@ -632,7 +842,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
       },
     ]);
     
-    // Send to server
     wsRef.current.send(JSON.stringify({
       type: "text",
       content: inputText,
@@ -641,7 +850,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     setInputText("");
   }, [inputText]);
 
-  // Handle Enter key
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -654,7 +862,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Find supported mimeType
       const mimeTypes = [
         "audio/webm;codecs=opus",
         "audio/webm",
@@ -690,7 +897,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
         const blobType = selectedMimeType || "audio/webm";
         const audioBlob = new Blob(audioChunksRef.current, { type: blobType });
         
-        // Convert to base64 and send
         const reader = new FileReader();
         reader.onloadend = () => {
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -704,7 +910,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
         };
         reader.readAsDataURL(audioBlob);
         
-        // Stop all tracks
         stream.getTracks().forEach((track) => track.stop());
       };
       
@@ -717,7 +922,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     }
   };
 
-  // Stop recording
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
@@ -725,7 +929,6 @@ export function AISidebar({ onClose }: AISidebarProps) {
     }
   };
 
-  // Toggle recording
   const toggleRecording = () => {
     if (isRecording) {
       stopRecording();
@@ -734,10 +937,10 @@ export function AISidebar({ onClose }: AISidebarProps) {
     }
   };
 
-  // Get current status text
   const getStatusText = () => {
     if (!isConnected) return "Reconnecting...";
-    if (isListeningToMeeting) return "AI Assistant Active";
+    if (isStreaming) return "Streaming response...";
+    if (isListeningToMeeting) return "AI Assistant Active (Realtime)";
     if (isLiveTranslating) {
       const langName = SUPPORTED_LANGUAGES.find(l => l.code === targetLanguage)?.name || targetLanguage;
       return `Translating to ${langName}`;
@@ -791,9 +994,17 @@ export function AISidebar({ onClose }: AISidebarProps) {
             <Bot className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h3 className="font-bold text-white">AI Assistant</h3>
             <div className="flex items-center gap-1.5">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
+              <h3 className="font-bold text-white">AI Meeting Hub</h3>
+              {isStreaming && (
+                <Zap className="w-3.5 h-3.5 text-yellow-400 animate-pulse" />
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className={`w-2 h-2 rounded-full ${
+                isStreaming ? "bg-yellow-400 animate-pulse" : 
+                isConnected ? "bg-emerald-400 animate-pulse" : "bg-red-400"
+              }`} />
               <span className="text-xs text-gray-400">{getStatusText()}</span>
             </div>
           </div>
@@ -803,19 +1014,64 @@ export function AISidebar({ onClose }: AISidebarProps) {
         </button>
       </div>
 
+      {/* Tab Bar */}
+      <div className="flex border-b border-gray-800 bg-gray-900/80">
+        <button
+          onClick={() => setCurrentTab('ai')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all border-b-2 ${
+            currentTab === 'ai'
+              ? 'border-emerald-400 text-emerald-400 bg-emerald-500/5'
+              : 'border-transparent text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <Headphones className="w-3.5 h-3.5" />
+          AI Assistant
+          {isListeningToMeeting && (
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          )}
+        </button>
+        <button
+          onClick={() => setCurrentTab('translation')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all border-b-2 ${
+            currentTab === 'translation'
+              ? 'border-blue-400 text-blue-400 bg-blue-500/5'
+              : 'border-transparent text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <Languages className="w-3.5 h-3.5" />
+          Translation
+          {isLiveTranslating && (
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+          )}
+        </button>
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gradient-to-b from-gray-900 to-gray-950">
-        {messages.length === 0 && (
+        {messages.length === 0 && !isStreaming && (
           <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 py-8">
             <div className="w-16 h-16 bg-gradient-to-br from-violet-500/20 to-indigo-600/20 rounded-2xl flex items-center justify-center mb-4">
-              <Bot className="w-8 h-8 text-indigo-400" />
+              {currentTab === 'ai' ? (
+                <Headphones className="w-8 h-8 text-emerald-400" />
+              ) : (
+                <Languages className="w-8 h-8 text-blue-400" />
+              )}
             </div>
-            <p className="text-sm mb-2">Your AI meeting assistant is ready!</p>
-            <p className="text-xs text-gray-500 max-w-xs mb-3">Use the buttons below:</p>
-            <div className="text-xs text-gray-500 space-y-1.5 text-left">
-              <p>🎧 <strong className="text-emerald-400">AI Assistant</strong> - Transcribe + AI answers</p>
-              <p>🌐 <strong className="text-blue-400">Translate</strong> - Real-time translation</p>
-            </div>
+            {currentTab === 'ai' ? (
+              <>
+                <p className="text-sm mb-2">AI Assistant</p>
+                <p className="text-xs text-gray-500 max-w-xs">
+                  Click <strong className="text-emerald-400">Start</strong> below to stream audio directly to AI. Get real-time answers as participants speak.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm mb-2">Live Translation</p>
+                <p className="text-xs text-gray-500 max-w-xs">
+                  Click <strong className="text-blue-400">Start</strong> below and choose a language. Speech will be translated and spoken in real-time.
+                </p>
+              </>
+            )}
           </div>
         )}
         
@@ -860,13 +1116,13 @@ export function AISidebar({ onClose }: AISidebarProps) {
             >
               {message.role === "meeting" && message.speaker && (
                 <span className="text-xs text-emerald-300 opacity-70 block mb-1">
-                  🎤 {message.speaker}:
+                  {message.speaker}:
                 </span>
               )}
               {message.role === "translation" && (
                 <>
                   <span className="text-xs text-blue-300 opacity-70 block mb-1">
-                    🌐 {message.speaker} → {SUPPORTED_LANGUAGES.find(l => l.code === message.targetLanguage)?.name || message.targetLanguage}:
+                    {message.speaker} {"->"} {SUPPORTED_LANGUAGES.find(l => l.code === message.targetLanguage)?.name || message.targetLanguage}:
                   </span>
                   {message.originalText && (
                     <div className="text-xs text-blue-300/50 italic mb-2 pb-2 border-b border-blue-700/30">
@@ -876,15 +1132,35 @@ export function AISidebar({ onClose }: AISidebarProps) {
                 </>
               )}
               {message.isTranscription && message.role === "user" && (
-                <span className="text-xs text-blue-200 opacity-70 block mb-1">🎤 Voice message:</span>
+                <span className="text-xs text-blue-200 opacity-70 block mb-1">Voice message:</span>
               )}
               <div className="whitespace-pre-wrap">{message.content}</div>
             </div>
           </div>
         ))}
         
-        {/* Typing indicator */}
-        {(isTyping || isProcessing) && (
+        {/* ====== STREAMING MESSAGE - Real-time token display ====== */}
+        {isStreaming && (
+          <div className="flex gap-3">
+            <div className="w-8 h-8 bg-gradient-to-br from-violet-500/30 to-indigo-600/30 rounded-full flex items-center justify-center shrink-0 mt-1">
+              <Bot className="w-4 h-4 text-indigo-400" />
+            </div>
+            <div className="p-3 rounded-2xl rounded-tl-none text-sm max-w-[85%] bg-gray-800/80 text-gray-200 border border-indigo-500/30 backdrop-blur-sm">
+              {streamingHeard && (
+                <div className="text-xs text-gray-400 italic mb-2 pb-1.5 border-b border-gray-700/50">
+                  Heard: &ldquo;{streamingHeard}&rdquo;
+                </div>
+              )}
+              <div className="whitespace-pre-wrap">
+                {streamingContent || ""}
+                <span className="inline-block w-2 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle rounded-sm" />
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Typing/Processing indicator (shown when not streaming) */}
+        {(isTyping || isProcessing) && !isStreaming && (
           <div className="flex gap-3">
             <div className="w-8 h-8 bg-gradient-to-br from-violet-500/30 to-indigo-600/30 rounded-full flex items-center justify-center shrink-0 mt-1">
               <Bot className="w-4 h-4 text-indigo-400" />
@@ -905,91 +1181,98 @@ export function AISidebar({ onClose }: AISidebarProps) {
 
       {/* Input Area */}
       <div className="p-3 border-t border-gray-800 bg-gray-900 space-y-3">
-        {/* Status indicator for active modes */}
-        {(isListeningToMeeting || isLiveTranslating) && (
-          <div className={`flex items-center justify-between py-2 px-3 rounded-lg ${
-            isListeningToMeeting ? 'bg-emerald-500/10 border border-emerald-500/30' : 
-            'bg-blue-500/10 border border-blue-500/30'
-          }`}>
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full animate-pulse ${
-                isListeningToMeeting ? 'bg-emerald-400' : 
-                'bg-blue-400'
-              }`} />
-              <span className={`text-xs font-medium ${
-                isListeningToMeeting ? 'text-emerald-400' : 
-                'text-blue-400'
-              }`}>
-                {isListeningToMeeting && 'AI Assistant Active'}
-                {isLiveTranslating && `Translating to ${SUPPORTED_LANGUAGES.find(l => l.code === targetLanguage)?.name}`}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              {/* Audio toggle for translation */}
-              {isLiveTranslating && (
-                <button
-                  onClick={() => setAudioEnabled(!audioEnabled)}
-                  title={audioEnabled ? "Mute audio output" : "Enable audio output"}
-                  className={`p-1.5 rounded-lg transition-all ${
-                    audioEnabled 
-                      ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' 
-                      : 'bg-gray-700 text-gray-500 hover:bg-gray-600'
-                  }`}
-                >
-                  {audioEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-                </button>
-              )}
-              <span className="text-xs text-gray-500">
-                {remoteParticipants.length > 0 ? `${remoteParticipants.length} participant(s)` : 'No participants'}
-              </span>
-            </div>
-          </div>
+        {/* ===== AI TAB CONTROLS ===== */}
+        {currentTab === 'ai' && (
+          <>
+            {/* Active status */}
+            {isListeningToMeeting && (
+              <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full animate-pulse bg-emerald-400" />
+                  <span className="text-xs font-medium text-emerald-400">
+                    Realtime AI Streaming
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500">
+                  {remoteParticipants.length > 0 ? `${remoteParticipants.length} participant(s)` : 'No participants'}
+                </span>
+              </div>
+            )}
+
+            {/* Recording indicator */}
+            {isRecording && (
+              <div className="flex items-center justify-center gap-2 py-2 px-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                <span className="text-xs text-red-400 font-medium">Recording... Click mic to stop</span>
+              </div>
+            )}
+
+            {/* AI Start/Stop button */}
+            <button
+              onClick={toggleMeetingListening}
+              disabled={!isConnected}
+              className={`w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl transition-all duration-200 font-medium text-sm ${
+                isListeningToMeeting
+                  ? "bg-red-500/90 text-white hover:bg-red-600 shadow-lg shadow-red-500/20"
+                  : isConnected
+                  ? "bg-emerald-500 text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/20"
+                  : "bg-gray-800 text-gray-600 cursor-not-allowed border border-gray-700"
+              }`}
+            >
+              <Headphones className={`w-4 h-4 ${isListeningToMeeting ? 'animate-pulse' : ''}`} />
+              {isListeningToMeeting ? 'Stop AI Assistant' : 'Start AI Assistant'}
+            </button>
+          </>
         )}
 
-        {/* Recording indicator */}
-        {isRecording && (
-          <div className="flex items-center justify-center gap-2 py-2 px-4 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-            <span className="text-xs text-red-400 font-medium">Recording... Click mic to stop</span>
-          </div>
+        {/* ===== TRANSLATION TAB CONTROLS ===== */}
+        {currentTab === 'translation' && (
+          <>
+            {/* Active status */}
+            {isLiveTranslating && (
+              <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full animate-pulse bg-blue-400" />
+                  <span className="text-xs font-medium text-blue-400">
+                    Translating to {SUPPORTED_LANGUAGES.find(l => l.code === targetLanguage)?.name}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAudioEnabled(!audioEnabled)}
+                    title={audioEnabled ? "Mute audio" : "Enable audio"}
+                    className={`p-1.5 rounded-lg transition-all ${
+                      audioEnabled 
+                        ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' 
+                        : 'bg-gray-700 text-gray-500 hover:bg-gray-600'
+                    }`}
+                  >
+                    {audioEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                  </button>
+                  <span className="text-xs text-gray-500">
+                    {remoteParticipants.length > 0 ? `${remoteParticipants.length} participant(s)` : 'No participants'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Translation Start/Stop button */}
+            <button
+              onClick={toggleLiveTranslation}
+              disabled={!isConnected}
+              className={`w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl transition-all duration-200 font-medium text-sm ${
+                isLiveTranslating
+                  ? "bg-red-500/90 text-white hover:bg-red-600 shadow-lg shadow-red-500/20"
+                  : isConnected
+                  ? "bg-blue-500 text-white hover:bg-blue-600 shadow-lg shadow-blue-500/20"
+                  : "bg-gray-800 text-gray-600 cursor-not-allowed border border-gray-700"
+              }`}
+            >
+              <Languages className={`w-4 h-4 ${isLiveTranslating ? 'animate-pulse' : ''}`} />
+              {isLiveTranslating ? 'Stop Translation' : 'Start Translation'}
+            </button>
+          </>
         )}
-
-        {/* Two Feature Buttons */}
-        <div className="grid grid-cols-2 gap-2">
-          {/* AI Assistant Button */}
-          <button
-            onClick={toggleMeetingListening}
-            disabled={!isConnected}
-            title="AI Assistant - Transcribe & Get AI Answers"
-            className={`flex flex-col items-center justify-center gap-1 py-2.5 px-2 rounded-xl transition-all duration-200 ${
-              isListeningToMeeting
-                ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/30"
-                : isConnected
-                ? "bg-gray-800 text-gray-400 hover:bg-emerald-500/20 hover:text-emerald-400 border border-gray-700 hover:border-emerald-500/50"
-                : "bg-gray-800 text-gray-600 cursor-not-allowed border border-gray-700"
-            }`}
-          >
-            <Headphones className={`w-5 h-5 ${isListeningToMeeting ? 'animate-pulse' : ''}`} />
-            <span className="text-[10px] font-medium">AI Assistant</span>
-          </button>
-
-          {/* Live Translation Button */}
-          <button
-            onClick={toggleLiveTranslation}
-            disabled={!isConnected}
-            title="Live Translation - Translate to Your Language"
-            className={`flex flex-col items-center justify-center gap-1 py-2.5 px-2 rounded-xl transition-all duration-200 ${
-              isLiveTranslating
-                ? "bg-blue-500 text-white shadow-lg shadow-blue-500/30"
-                : isConnected
-                ? "bg-gray-800 text-gray-400 hover:bg-blue-500/20 hover:text-blue-400 border border-gray-700 hover:border-blue-500/50"
-                : "bg-gray-800 text-gray-600 cursor-not-allowed border border-gray-700"
-            }`}
-          >
-            <Languages className={`w-5 h-5 ${isLiveTranslating ? 'animate-pulse' : ''}`} />
-            <span className="text-[10px] font-medium">Translate</span>
-          </button>
-        </div>
         
         {/* Text input row */}
         <div className="flex gap-2">

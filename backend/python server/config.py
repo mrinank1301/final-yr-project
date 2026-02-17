@@ -21,6 +21,9 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 AZURE_SPEECH_KEY = os.getenv('AZURE_SPEECH_KEY', '')
 AZURE_SPEECH_REGION = os.getenv('AZURE_SPEECH_REGION', 'eastasia')
 
+# ==================== OpenAI Configuration (Realtime API for AI Assistant) ====================
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+
 # ==================== Groq AI Configuration ====================
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 
