@@ -1,4 +1,4 @@
-# MeetAI — Intelligent Video Calling Platform
+# Orbicall — Intelligent Video Calling Platform
 
 A full-stack video conferencing application with an AI-powered meeting assistant, real-time collaborative code editor, live translation, and more — built for modern remote collaboration.
 
@@ -34,7 +34,7 @@ There is a clear need for a unified video calling platform that combines high-qu
 
 ## Problem Solution
 
-We built **MeetAI**, a single platform that addresses every gap listed above:
+We built **Orbicall**, a single platform that addresses every gap listed above:
 
 | Problem | Our Solution |
 |---------|-------------|
@@ -48,7 +48,7 @@ We built **MeetAI**, a single platform that addresses every gap listed above:
 
 ## Project Description
 
-MeetAI is a modern, microservices-based video calling application inspired by Google Meet's clean UI, enhanced with AI-powered features. The platform is composed of four core services:
+Orbicall is a modern video calling application built on a **modular monolithic architecture**, inspired by Google Meet's clean UI and enhanced with AI-powered features. The backend logic — AI, code execution, and collaborative editing — lives inside a single Python FastAPI process organized into clean modules (routers, services, websockets), while a thin Node.js server handles LiveKit token generation. The platform is composed of four core components:
 
 1. **Frontend** — A Next.js 16 / React 19 application with Tailwind CSS, providing the landing page, video room UI, AI assistant sidebar, code editor panel, and enterprise pages.
 2. **Node.js Backend** — A lightweight Express server responsible for LiveKit token generation and room management.
@@ -218,7 +218,7 @@ cd frontend/project && npm run dev
 
 ## System Design
 
-The application follows a **microservices architecture** with four independent services communicating over HTTP, WebSocket, and WebRTC protocols.
+The application follows a **modular monolithic architecture**. The Python Backend is a single FastAPI process with clearly separated internal modules — `routers/` for API endpoints, `services/` for business logic, and `websockets/` for real-time handlers — rather than independently deployed microservices. The Node.js server exists only as a lightweight token generator. All components communicate over HTTP, WebSocket, and WebRTC protocols.
 
 ### Services and Responsibilities
 
