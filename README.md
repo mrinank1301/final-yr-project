@@ -48,7 +48,7 @@ We built **MeetAI**, a single platform that addresses every gap listed above:
 
 ## Project Description
 
-MeetAI is a modern, microservices-based video calling application inspired by Google Meet's clean UI, enhanced with AI-powered features. The platform is composed of four core services:
+Orbicall is a modern, microservices-based video calling application inspired by Google Meet's clean UI, enhanced with AI-powered features. The platform is composed of four core services:
 
 1. **Frontend** — A Next.js 16 / React 19 application with Tailwind CSS, providing the landing page, video room UI, AI assistant sidebar, code editor panel, and enterprise pages.
 2. **Node.js Backend** — A lightweight Express server responsible for LiveKit token generation and room management.
