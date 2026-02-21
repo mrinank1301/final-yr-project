@@ -294,7 +294,7 @@ The system is composed of four services. The **Browser** connects to the **Next.
 
 ## Architecture — AI Assistant
 
-![AI Assistant Architecture](assets/ai-assistant-architecture.png)
+![AI Assistant Architecture](assets/Screenshot 2026-02-21 132120.png)
 
 The diagram above shows the exact file-level handshake between components. The AI Assistant is powered entirely by the **OpenAI Realtime API** (`gpt-4o-mini-realtime-preview`). Here is the flow through each file:
 
