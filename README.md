@@ -48,11 +48,7 @@ We built **Orbicall**, a single platform that addresses every gap listed above:
 
 ## Project Description
 
-<<<<<<< HEAD
 Orbicall is a modern video calling application built on a **modular monolithic architecture**, inspired by Google Meet's clean UI and enhanced with AI-powered features. The backend logic — AI, code execution, and collaborative editing — lives inside a single Python FastAPI process organized into clean modules (routers, services, websockets), while a thin Node.js server handles LiveKit token generation. The platform is composed of four core components:
-=======
-Orbicall is a modern, microservices-based video calling application inspired by Google Meet's clean UI, enhanced with AI-powered features. The platform is composed of four core services:
->>>>>>> 01d8ae22add96239513b96a0478d3cf5c0b0ae5f
 
 1. **Frontend** — A Next.js 16 / React 19 application with Tailwind CSS, providing the landing page, video room UI, AI assistant sidebar, code editor panel, and enterprise pages.
 2. **Node.js Backend** — A lightweight Express server responsible for LiveKit token generation and room management.
@@ -376,7 +372,3 @@ We welcome contributions! Please follow these guidelines to keep the codebase cl
 - Help newcomers get started — everyone was a beginner once.
 
 ---
-
-<p align="center">
-  Built with Next.js, FastAPI, LiveKit, and a lot of AI magic.
-</p>
