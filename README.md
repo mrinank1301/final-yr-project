@@ -1,4 +1,4 @@
-# OrbicallAI — Intelligent Video Calling Platform
+# Orbicall — Intelligent Video Calling Platform
 
 A full-stack video conferencing application with an AI-powered meeting assistant, real-time collaborative code editor, live translation, and more — built for modern remote collaboration.
 
