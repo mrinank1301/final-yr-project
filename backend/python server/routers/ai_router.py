@@ -4,7 +4,7 @@ AI Router - Handles AI-related HTTP endpoints (now using Groq)
 import base64
 from fastapi import APIRouter, HTTPException
 
-from config import GROQ_API_KEY
+from config import GROQ_API_KEY, OPENAI_API_KEY
 from models import (
     TranscribeRequest, TranscribeResponse,
     SentimentRequest, SentimentResponse,
@@ -143,8 +143,8 @@ async def end_meeting_and_summarize(request: MeetingEndRequest):
     - **participant_name**: Name of participant ending the meeting
     """
     try:
-        if not GROQ_API_KEY:
-            raise HTTPException(status_code=500, detail="Groq API key not configured")
+        if not OPENAI_API_KEY and not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="No AI API key configured (need OpenAI or Groq)")
         
         # Get or create meeting
         meeting = get_or_create_meeting(request.room_id, request.participant_name)

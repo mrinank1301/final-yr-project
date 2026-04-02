@@ -119,8 +119,8 @@ export default function RoomPage() {
         token={token}
         serverUrl={serverUrl}
         connect={true}
-        onDisconnected={() => router.push("/")}
-        data-lk-theme="default"
+        onDisconnected={() => router.push(`/room/${roomId}/end?name=${encodeURIComponent(userName)}`)}
+        data-lk-theme="huddle"
         className="h-full w-full"
       >
         <VideoConferenceComponent />

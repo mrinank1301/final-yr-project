@@ -24,6 +24,25 @@ AZURE_SPEECH_REGION = os.getenv('AZURE_SPEECH_REGION', 'eastasia')
 # ==================== OpenAI Configuration (Realtime API for AI Assistant) ====================
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
+# ==================== Sarvam AI Configuration (Indian language STT, Translation, TTS) ====================
+SARVAM_API_KEY = os.getenv('SARVAM_API_KEY', '')
+
+# Mapping from ISO 639-1 codes (frontend) to Sarvam BCP-47 codes
+SARVAM_LANGUAGE_MAP = {
+    "hi": "hi-IN", "bn": "bn-IN", "ta": "ta-IN", "te": "te-IN",
+    "kn": "kn-IN", "ml": "ml-IN", "mr": "mr-IN", "gu": "gu-IN",
+    "pa": "pa-IN", "od": "od-IN", "en": "en-IN", "as": "as-IN",
+    "ur": "ur-IN", "ne": "ne-IN", "kok": "kok-IN", "ks": "ks-IN",
+    "sd": "sd-IN", "sa": "sa-IN", "sat": "sat-IN", "mni": "mni-IN",
+    "brx": "brx-IN", "mai": "mai-IN", "doi": "doi-IN",
+}
+
+# Languages supported by Sarvam TTS (Bulbul v3) — subset of translation languages
+SARVAM_TTS_LANGUAGES = {
+    "hi-IN", "bn-IN", "ta-IN", "te-IN", "kn-IN", "ml-IN",
+    "mr-IN", "gu-IN", "pa-IN", "od-IN", "en-IN",
+}
+
 # ==================== Groq AI Configuration ====================
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 

@@ -1,6 +1,8 @@
 """
-AI Service - Groq Whisper for transcription + Groq LLM for ultra-fast meeting assistance
-+ Azure TTS for text-to-speech translation
+AI Service - Sarvam AI for transcription/translation/TTS (Indian languages)
++ OpenAI GPT-4o-mini for real-time AI assistant streaming (primary)
++ Groq LLM as fallback for chat assistance
++ OpenAI GPT-4o for meeting summary generation
 + Token streaming & incremental transcription for real-time Parakeet AI-like experience
 """
 import asyncio
@@ -13,12 +15,22 @@ from typing import List, Optional, Tuple, AsyncGenerator
 from datetime import datetime
 from groq import Groq, AsyncGroq
 
+from openai import AsyncOpenAI
+
 from config import (
     GROQ_API_KEY,
     GROQ_MODELS,
     AI_SYSTEM_INSTRUCTION,
     AZURE_SPEECH_KEY,
-    AZURE_SPEECH_REGION
+    AZURE_SPEECH_REGION,
+    OPENAI_API_KEY,
+    SARVAM_API_KEY,
+)
+from services.sarvam_service import (
+    sarvam_transcribe,
+    sarvam_translate,
+    sarvam_tts,
+    sarvam_translate_and_speak,
 )
 
 # Initialize Groq clients (sync for transcription, async for streaming LLM)
@@ -30,6 +42,14 @@ if GROQ_API_KEY:
     print("[AI Service] Groq clients initialized - Sync + Async streaming ready!")
 else:
     print("[AI Service] ERROR: Groq API key not set! Please set GROQ_API_KEY in .env")
+
+# Initialize OpenAI async client (used for AI assistant streaming + meeting summaries)
+openai_client = None
+if OPENAI_API_KEY:
+    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    print("[AI Service] OpenAI client initialized (GPT-4o-mini streaming + GPT-4o summaries)")
+else:
+    print("[AI Service] WARNING: OpenAI API key not set — AI assistant & summaries will fall back to Groq")
 
 # Reusable aiohttp connector for TTS (connection pooling for speed)
 _tts_connector = None
@@ -84,81 +104,73 @@ def is_question(text: str) -> bool:
     return False
 
 
-async def transcribe_with_groq_whisper(audio_data: bytes, source_language: str = None) -> str:
+async def transcribe_with_sarvam(audio_data: bytes, source_language: str = None) -> str:
     """
-    Transcribe audio using Groq's Whisper API - Fast and accurate!
-    Supports WebM, MP3, WAV, and other formats directly.
-    If source_language is None, auto-detects the language.
+    Transcribe audio using Sarvam AI STT (Saaras model).
+    Falls back to Groq Whisper if Sarvam is unavailable.
+    Supports WebM, MP3, WAV, OGG, etc.
     """
+    # Primary: Sarvam AI STT (excellent for Indian languages)
+    if SARVAM_API_KEY:
+        result = await sarvam_transcribe(audio_data, source_language)
+        if result:
+            return result
+        print("[Transcribe] Sarvam returned empty — trying Groq Whisper fallback")
+
+    # Fallback: Groq Whisper
     if not groq_client:
-        print("[Whisper] ERROR: No Groq client available")
+        print("[Transcribe] ERROR: No transcription backend available")
         return ""
-    
+
     try:
-        # Save audio to temp file (Groq Whisper needs a file)
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_file:
             temp_file.write(audio_data)
             temp_path = temp_file.name
-        
+
         try:
-            print(f"[Whisper] Transcribing {len(audio_data)} bytes... (lang: {source_language or 'auto'})")
-            
-            # Use Groq's Whisper API
+            print(f"[Whisper Fallback] Transcribing {len(audio_data)} bytes (lang={source_language or 'auto'})...")
             loop = asyncio.get_event_loop()
-            
-            # Build parameters - only include language if specified
+
             def do_transcription():
                 params = {
                     "model": "whisper-large-v3",
                     "file": open(temp_path, "rb"),
-                    "response_format": "text"
+                    "response_format": "text",
                 }
-                # Only set language if specified, otherwise let Whisper auto-detect
                 if source_language:
                     params["language"] = source_language
                 return groq_client.audio.transcriptions.create(**params)
-            
+
             transcription = await loop.run_in_executor(None, do_transcription)
-            
             result = transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
-            
-            # Filter out empty, noise-only, and Whisper hallucination transcriptions
-            # Whisper often hallucinates these short phrases on silence/noise
+
             hallucinations = {
                 '', '.', '..', '...', 'you', 'yeah', 'uh', 'um', 'hmm', 'ah', 'oh',
                 'thank you.', 'thanks.', 'thank you', 'thanks',
                 'hello.', 'hello', 'hi.', 'hi', 'hey.', 'hey',
                 'bye.', 'bye', 'goodbye.', 'goodbye',
                 'yes.', 'yes', 'no.', 'no', 'okay.', 'okay', 'ok.', 'ok',
-                'cheers.', 'cheers', 'good.', 'good',
-                'hei!', 'hei', 'olá!', 'olá', 'ciao.', 'ciao',
-                'good morning.', 'good morning', 'good night.', 'good night',
-                'thank you for watching.', 'thanks for watching.',
-                'please subscribe.', 'like and subscribe.',
-                'see you next time.', 'see you.',
                 'subtitles by', 'translated by', 'amara.org',
             }
-            
+
             result_check = result.lower().strip().rstrip('.')
-            if (result and len(result) > 2 
-                and result.lower() not in hallucinations 
+            if (result and len(result) > 2
+                and result.lower() not in hallucinations
                 and result_check not in hallucinations
-                and len(result.split()) >= 2):  # Require at least 2 words
-                print(f"[Whisper] SUCCESS: {result}")
+                and len(result.split()) >= 2):
+                print(f"[Whisper Fallback] SUCCESS: {result}")
                 return result
             else:
-                print(f"[Whisper] Filtered (hallucination/noise): '{result}'")
+                print(f"[Whisper Fallback] Filtered: '{result}'")
                 return ""
-                
         finally:
-            # Clean up temp file
             try:
                 os.unlink(temp_path)
             except:
                 pass
-                
+
     except Exception as e:
-        print(f"[Whisper] Error: {e}")
+        print(f"[Whisper Fallback] Error: {e}")
         return ""
 
 
@@ -311,13 +323,84 @@ async def process_with_groq_streaming(
         yield "Sorry, I encountered an error. Please try again."
 
 
+async def process_with_openai_streaming(
+    message: str,
+    chat_history: Optional[List[dict]] = None,
+    meeting_context: Optional[List[str]] = None
+) -> AsyncGenerator[str, None]:
+    """
+    Stream LLM response token-by-token using OpenAI GPT-4o-mini.
+    Primary streaming backend for the AI assistant — better quality than Groq.
+    """
+    if not openai_client:
+        return
+
+    try:
+        messages = [
+            {"role": "system", "content": AI_SYSTEM_INSTRUCTION}
+        ]
+
+        if meeting_context and len(meeting_context) > 0:
+            recent_context = meeting_context[-8:]
+            context_text = "\n".join(recent_context)
+            messages.append({
+                "role": "system",
+                "content": f"Recent conversation:\n{context_text}"
+            })
+
+        if chat_history:
+            for msg in chat_history[-5:]:
+                role = "user" if msg["role"] == "user" else "assistant"
+                messages.append({"role": role, "content": msg["content"]})
+
+        messages.append({"role": "user", "content": message})
+
+        print(f"[OpenAI Stream] Streaming with gpt-4o-mini...")
+        stream = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=400,
+            stream=True,
+        )
+
+        token_count = 0
+        async for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                token_count += 1
+                yield content
+
+        print(f"[OpenAI Stream] Streamed {token_count} tokens successfully")
+
+    except Exception as e:
+        print(f"[OpenAI Stream] Exception: {e}")
+        raise
+
+
 async def stream_message(
     message: str,
     chat_history: Optional[List[dict]] = None,
     meeting_context: Optional[List[str]] = None
 ) -> AsyncGenerator[str, None]:
-    """Main streaming message function - yields tokens from Groq LLM"""
+    """
+    Main streaming message function.
+    Primary: OpenAI GPT-4o-mini (better quality).
+    Fallback: Groq LLM (if OpenAI fails or is unavailable).
+    """
     print(f"[Stream] Message: {message[:50]}...")
+
+    if openai_client:
+        try:
+            yielded = False
+            async for token in process_with_openai_streaming(message, chat_history, meeting_context):
+                yielded = True
+                yield token
+            if yielded:
+                return
+        except Exception as e:
+            print(f"[Stream] OpenAI failed, falling back to Groq: {e}")
+
     async for token in process_with_groq_streaming(message, chat_history, meeting_context):
         yield token
 
@@ -327,46 +410,52 @@ async def stream_message(
 async def translate_text(
     text: str,
     target_language: str,
-    source_language: str = "auto"
+    source_language: str = "auto",
 ) -> str:
-    """Translate text to target language using Groq LLM - Optimized for speed"""
-    if not groq_client:
-        print("[Translation] ERROR: No Groq client available")
-        return text  # Return original if no client
-    
+    """
+    Translate text using Sarvam Translate (primary) with Groq LLM fallback.
+    Sarvam excels at Indian languages; Groq handles non-Indian languages.
+    """
     if not text or len(text.strip()) < 2:
         return ""
-    
+
+    # Primary: Sarvam AI Translation (optimized for Indian languages)
+    if SARVAM_API_KEY:
+        result = await sarvam_translate(text, target_language, source_language)
+        if result and result != text:
+            return result
+        print("[Translation] Sarvam returned original — trying Groq LLM fallback")
+
+    # Fallback: Groq LLM translation
+    if not groq_client:
+        print("[Translation] ERROR: No translation backend available")
+        return text
+
     try:
-        # Language name mapping for better prompts
         language_names = {
             "en": "English", "es": "Spanish", "fr": "French", "de": "German",
             "it": "Italian", "pt": "Portuguese", "ru": "Russian", "zh": "Chinese (Mandarin)",
             "ja": "Japanese", "ko": "Korean", "ar": "Arabic", "hi": "Hindi",
             "te": "Telugu", "ta": "Tamil", "bn": "Bengali", "nl": "Dutch",
-            "pl": "Polish", "tr": "Turkish", "vi": "Vietnamese", "th": "Thai"
+            "pl": "Polish", "tr": "Turkish", "vi": "Vietnamese", "th": "Thai",
+            "kn": "Kannada", "ml": "Malayalam", "mr": "Marathi", "gu": "Gujarati",
+            "pa": "Punjabi", "od": "Odia", "ur": "Urdu", "ne": "Nepali",
         }
-        
         target_name = language_names.get(target_language, target_language)
-        
-        # Optimized prompt - shorter and more direct
+
         messages = [
             {"role": "system", "content": f"Translate to {target_name} only. Output translation only, no explanations."},
-            {"role": "user", "content": f"Translate: {text}"}
+            {"role": "user", "content": f"Translate: {text}"},
         ]
-        
-        # Safe print that handles non-ASCII characters
-        try:
-            print(f"[Translation] Translating to {target_name}: '{text[:40]}...'")
-        except UnicodeEncodeError:
-            print(f"[Translation] Translating to {target_name}: [non-ASCII input]")
 
-        
+        try:
+            print(f"[Translation Fallback] Translating to {target_name}: '{text[:40]}...'")
+        except UnicodeEncodeError:
+            print(f"[Translation Fallback] Translating to {target_name}: [non-ASCII input]")
+
         loop = asyncio.get_event_loop()
-        
-        # Use fastest model first for translation (speed is priority)
         fast_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "gemma2-9b-it"]
-        
+
         for model in fast_models:
             result = None
             try:
@@ -375,56 +464,36 @@ async def translate_text(
                     lambda m=model: groq_client.chat.completions.create(
                         model=m,
                         messages=messages,
-                        temperature=0.1,  # Lower temp for faster, more consistent translation
-                        max_tokens=100,   # Reduced for speed
-                    )
+                        temperature=0.1,
+                        max_tokens=100,
+                    ),
                 )
-                
                 result = response.choices[0].message.content.strip()
-                # Remove quotes if present
                 if result.startswith('"') and result.endswith('"'):
                     result = result[1:-1]
                 if result.startswith("'") and result.endswith("'"):
                     result = result[1:-1]
-                
-                # Safe print that handles non-ASCII characters
-                try:
-                    print(f"[Translation] Success: {len(result)} chars")
-                except:
-                    pass
+                print(f"[Translation Fallback] Success: {len(result)} chars")
                 return result
-                
             except Exception as e:
                 error_msg = str(e)
-                # Check if it's an encoding error (translation likely succeeded)
                 if "charmap" in error_msg.lower() or "encode" in error_msg.lower():
                     if result:
-                        print(f"[Translation] Success (with encoding warning)")
                         return result
                     continue
-                    
-                try:
-                    print(f"[Translation] Error with {model}: {error_msg[:80]}")
-                except:
-                    print(f"[Translation] Error with {model}")
-                    
-                if "not found" in error_msg.lower() or "does not exist" in error_msg.lower() or "decommissioned" in error_msg.lower():
-                    continue
-                if "rate" in error_msg.lower():
-                    await asyncio.sleep(0.5)  # Reduced wait time
-                    continue
+                print(f"[Translation Fallback] Error with {model}: {error_msg[:80]}")
                 continue
-        
-        return text  # Return original if all models fail
-        
+
+        return text
+
     except Exception as e:
-        print(f"[Translation] Exception: {e}")
-        return text  # Return original on error
+        print(f"[Translation Fallback] Exception: {e}")
+        return text
 
 
 # ==================== Text-to-Speech Function ====================
 
-# Voice mapping for different languages (Azure Neural voices)
+# Azure voice mapping (kept as fallback for non-Indian languages)
 LANGUAGE_VOICES = {
     "en": "en-US-JennyNeural",
     "es": "es-ES-ElviraNeural",
@@ -450,25 +519,28 @@ LANGUAGE_VOICES = {
 
 async def text_to_speech(text: str, language: str = "en") -> Optional[bytes]:
     """
-    Convert text to speech using Azure Cognitive Services TTS.
-    Returns audio bytes (MP3 format) or None if failed.
-    Optimized for low latency.
+    Convert text to speech using Sarvam Bulbul TTS (primary) with Azure TTS fallback.
+    Returns audio bytes or None if failed.
     """
-    if not AZURE_SPEECH_KEY or not AZURE_SPEECH_REGION:
-        print("[TTS] ERROR: Azure Speech credentials not configured")
-        return None
-    
     if not text or len(text.strip()) < 1:
         return None
-    
+
+    # Primary: Sarvam TTS (excellent for Indian languages)
+    if SARVAM_API_KEY:
+        audio = await sarvam_tts(text, language)
+        if audio:
+            return audio
+        print("[TTS] Sarvam TTS returned None — trying Azure fallback")
+
+    # Fallback: Azure TTS
+    if not AZURE_SPEECH_KEY or not AZURE_SPEECH_REGION:
+        print("[TTS] ERROR: No TTS backend available (Sarvam + Azure both unconfigured)")
+        return None
+
     try:
-        # Get the appropriate voice for the language
         voice = LANGUAGE_VOICES.get(language, "en-US-JennyNeural")
-        
-        # Azure TTS endpoint
         endpoint = f"https://{AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1"
-        
-        # SSML format for Azure TTS - faster speech rate (1.15x) for quicker response
+
         ssml = f"""<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='{language}'>
             <voice name='{voice}'>
                 <prosody rate='1.15' pitch='0%'>
@@ -476,57 +548,53 @@ async def text_to_speech(text: str, language: str = "en") -> Optional[bytes]:
                 </prosody>
             </voice>
         </speak>"""
-        
+
         headers = {
             "Ocp-Apim-Subscription-Key": AZURE_SPEECH_KEY,
             "Content-Type": "application/ssml+xml",
-            "X-Microsoft-OutputFormat": "audio-16khz-64kbitrate-mono-mp3",  # Faster: smaller file
-            "User-Agent": "VideoCallAI"
+            "X-Microsoft-OutputFormat": "audio-16khz-64kbitrate-mono-mp3",
+            "User-Agent": "VideoCallAI",
         }
-        
-        # Use reusable session for connection pooling (faster!)
+
         session = await get_tts_session()
         async with session.post(endpoint, headers=headers, data=ssml.encode('utf-8'), timeout=aiohttp.ClientTimeout(total=10)) as response:
             if response.status == 200:
                 audio_data = await response.read()
-                print(f"[TTS] Done ({len(audio_data)} bytes)")
+                print(f"[TTS Azure Fallback] Done ({len(audio_data)} bytes)")
                 return audio_data
             else:
-                error_text = await response.text()
-                print(f"[TTS] ERROR: Status {response.status}")
+                print(f"[TTS Azure Fallback] ERROR: Status {response.status}")
                 return None
-                    
+
     except Exception as e:
-        print(f"[TTS] Exception: {e}")
+        print(f"[TTS Azure Fallback] Exception: {e}")
         return None
 
 
 async def translate_and_speak(
     text: str,
-    target_language: str
+    target_language: str,
 ) -> Tuple[str, Optional[bytes]]:
     """
     Translate text and convert to speech.
+    Uses Sarvam for both translation and TTS when available.
     Returns tuple of (translated_text, audio_bytes).
     """
-    # First translate
     translated = await translate_text(text, target_language)
-    
+
     if not translated:
         return ("", None)
-    
-    # Then convert to speech
+
     audio = await text_to_speech(translated, target_language)
-    
     return (translated, audio)
 
 
 # ==================== Main API Functions ====================
 
 async def transcribe_audio(audio_data: bytes, source_language: str = "en") -> str:
-    """Main transcription function - uses Groq Whisper. Defaults to English."""
+    """Main transcription function - uses Sarvam AI with Groq Whisper fallback."""
     print(f"[Transcribe] Processing {len(audio_data)} bytes (lang: {source_language})")
-    return await transcribe_with_groq_whisper(audio_data, source_language)
+    return await transcribe_with_sarvam(audio_data, source_language)
 
 
 async def process_message(
@@ -545,11 +613,12 @@ async def generate_meeting_summary_with_minutes(
     duration: str
 ) -> dict:
     """
-    Generate comprehensive meeting summary with minutes of meeting
-    Returns dict with summary, minutes, key_points, action_items, decisions
+    Generate comprehensive meeting summary with minutes of meeting using OpenAI GPT-4o.
+    Falls back to Groq if OpenAI is unavailable.
+    Returns dict with summary, minutes, key_points, action_items, decisions.
     """
-    if not groq_client:
-        print("[Summary] ERROR: No Groq client available")
+    if not openai_client and not groq_client:
+        print("[Summary] ERROR: No AI client available")
         return {
             "summary": "Summary generation not available.",
             "minutes": {},
@@ -594,85 +663,86 @@ Be thorough and extract all important information. If information is not availab
             {"role": "system", "content": "You are a professional meeting minutes generator. Always respond with valid JSON only, no additional text."},
             {"role": "user", "content": prompt}
         ]
-        
-        loop = asyncio.get_event_loop()
-        
-        # Use a capable model for better structured output
-        for model in ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile"]:
+
+        result_text = None
+
+        # Primary: use OpenAI GPT-4o
+        if openai_client:
             try:
-                print(f"[Summary] Generating summary with {model}...")
-                response = await loop.run_in_executor(
-                    None,
-                    lambda m=model: groq_client.chat.completions.create(
-                        model=m,
-                        messages=messages,
-                        temperature=0.3,  # Lower temp for more consistent structured output
-                        max_tokens=2000,
-                        response_format={"type": "json_object"} if "70b" in model else None
-                    )
+                print("[Summary] Generating summary with OpenAI GPT-4o...")
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=2000,
+                    response_format={"type": "json_object"},
                 )
-                
                 result_text = response.choices[0].message.content.strip()
-                
-                # Try to parse JSON
-                try:
-                    # Remove markdown code blocks if present
-                    if result_text.startswith("```"):
-                        result_text = result_text.split("```")[1]
-                        if result_text.startswith("json"):
-                            result_text = result_text[4:]
-                    result_text = result_text.strip()
-                    
-                    import json
-                    result = json.loads(result_text)
-                    
-                    # Ensure all required fields exist
-                    summary_data = {
-                        "summary": result.get("summary", "Summary not available."),
-                        "key_points": result.get("key_points", []),
-                        "action_items": result.get("action_items", []),
-                        "decisions": result.get("decisions", []),
-                        "topics_discussed": result.get("topics_discussed", [])
-                    }
-                    
-                    # Create minutes structure
-                    minutes = {
-                        "meeting_date": datetime.now().strftime("%Y-%m-%d"),
-                        "duration": duration,
-                        "participants": participants,
-                        "summary": summary_data["summary"],
-                        "key_points": summary_data["key_points"],
-                        "action_items": summary_data["action_items"],
-                        "decisions": summary_data["decisions"],
-                        "topics_discussed": summary_data["topics_discussed"]
-                    }
-                    
-                    summary_data["minutes"] = minutes
-                    
-                    print(f"[Summary] Successfully generated summary")
-                    return summary_data
-                    
-                except json.JSONDecodeError as e:
-                    print(f"[Summary] JSON parse error: {e}")
-                    print(f"[Summary] Response was: {result_text[:200]}")
-                    # Fall through to next model
-                    continue
-                    
+                print(f"[Summary] OpenAI GPT-4o returned {len(result_text)} chars")
             except Exception as e:
-                error_msg = str(e)
-                print(f"[Summary] Error with {model}: {error_msg[:100]}")
-                if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                print(f"[Summary] OpenAI error: {e}")
+                result_text = None
+
+        # Fallback: use Groq if OpenAI failed or is unavailable
+        if result_text is None and groq_client:
+            loop = asyncio.get_event_loop()
+            for model in ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile"]:
+                try:
+                    print(f"[Summary] Falling back to Groq {model}...")
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda m=model: groq_client.chat.completions.create(
+                            model=m,
+                            messages=messages,
+                            temperature=0.3,
+                            max_tokens=2000,
+                            response_format={"type": "json_object"} if "70b" in model else None,
+                        )
+                    )
+                    result_text = response.choices[0].message.content.strip()
+                    print(f"[Summary] Groq {model} returned {len(result_text)} chars")
+                    break
+                except Exception as e:
+                    print(f"[Summary] Groq error with {model}: {str(e)[:100]}")
                     continue
-                if "rate" in error_msg.lower():
-                    await asyncio.sleep(1)
-                    continue
-                continue
-        
-        # Fallback: generate simple summary
+
+        if result_text:
+            # Strip markdown fences if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+            result_text = result_text.strip()
+
+            result = json.loads(result_text)
+
+            summary_data = {
+                "summary": result.get("summary", "Summary not available."),
+                "key_points": result.get("key_points", []),
+                "action_items": result.get("action_items", []),
+                "decisions": result.get("decisions", []),
+                "topics_discussed": result.get("topics_discussed", []),
+            }
+
+            summary_data["minutes"] = {
+                "meeting_date": datetime.now().strftime("%Y-%m-%d"),
+                "duration": duration,
+                "participants": participants,
+                "summary": summary_data["summary"],
+                "key_points": summary_data["key_points"],
+                "action_items": summary_data["action_items"],
+                "decisions": summary_data["decisions"],
+                "topics_discussed": summary_data["topics_discussed"],
+            }
+
+            print("[Summary] Successfully generated summary")
+            return summary_data
+
+        # Last resort: simple summary via Groq chat
         print("[Summary] Using fallback simple summary")
-        simple_prompt = f"Summarize this meeting transcript in 3-4 sentences:\n\n{transcript}"
-        simple_summary = await process_with_groq(simple_prompt)
-        
+        simple_summary = await process_with_groq(
+            f"Summarize this meeting transcript in 3-4 sentences:\n\n{transcript}"
+        )
         return {
             "summary": simple_summary,
             "minutes": {
@@ -683,14 +753,14 @@ Be thorough and extract all important information. If information is not availab
                 "key_points": [],
                 "action_items": [],
                 "decisions": [],
-                "topics_discussed": []
+                "topics_discussed": [],
             },
             "key_points": [],
             "action_items": [],
             "decisions": [],
-            "topics_discussed": []
+            "topics_discussed": [],
         }
-        
+
     except Exception as e:
         print(f"[Summary] Exception: {e}")
         return {
@@ -698,5 +768,5 @@ Be thorough and extract all important information. If information is not availab
             "minutes": {},
             "key_points": [],
             "action_items": [],
-            "decisions": []
+            "decisions": [],
         }

@@ -15,8 +15,9 @@ import { AISidebar } from "./AISidebar";
 import { ParticipantList } from "./ParticipantList";
 import { CustomControlBar } from "./CustomControlBar";
 import { CodeEditorSidebar } from "./CodeEditorSidebar";
-import { TranscriptionSidebar } from "./TranscriptionSidebar";
+import { LiveCaptionsOverlay } from "./LiveCaptionsOverlay";
 import { WhiteboardSidebar } from "./WhiteboardSidebar";
+import { useBackgroundTranscript } from "./useBackgroundTranscript";
 
 // Message types for code editor synchronization
 interface CodeEditorMessage {
@@ -38,8 +39,14 @@ export function VideoConferenceComponent() {
   const { localParticipant } = useLocalParticipant();
   const roomId = room?.name || "default-room";
 
+  // Always-on background transcription for meeting summary
+  useBackgroundTranscript(roomId);
+
   const [activeSidebar, setActiveSidebar] = useState<
-    "none" | "chat" | "participants" | "ai" | "code" | "transcription" | "whiteboard"
+    "none" | "chat" | "participants" | "ai" | "code" | "whiteboard"
+  >("none");
+  const [activeOverlay, setActiveOverlay] = useState<
+    "none" | "transcription" | "translation"
   >("none");
   const [isCodeEditorFullScreen, setIsCodeEditorFullScreen] = useState(false);
   const [codeEditorStartedBy, setCodeEditorStartedBy] = useState<string | null>(null);
@@ -95,7 +102,11 @@ export function VideoConferenceComponent() {
     };
   }, [room]);
 
-  const toggleSidebar = (sidebar: "chat" | "participants" | "ai" | "code" | "transcription" | "whiteboard") => {
+  const toggleOverlay = (overlay: "transcription" | "translation") => {
+    setActiveOverlay(activeOverlay === overlay ? "none" : overlay);
+  };
+
+  const toggleSidebar = (sidebar: "chat" | "participants" | "ai" | "code" | "whiteboard") => {
     if (sidebar === "code") {
       if (activeSidebar !== "code") {
         // Opening code editor - broadcast to all
@@ -145,11 +156,19 @@ export function VideoConferenceComponent() {
       <div className="flex-1 flex overflow-hidden">
         {/* Main Video Area - hidden when code editor is full screen */}
         {!(activeSidebar === "code" && isCodeEditorFullScreen) && (
-          <div className="flex-1 p-4">
+          <div className="flex-1 p-4 relative">
             <div className="h-full rounded-3xl overflow-hidden bg-gray-900 shadow-2xl border border-gray-800 relative">
               <GridLayout tracks={tracks}>
                 <ParticipantTile />
               </GridLayout>
+
+              {/* Live Captions Overlay */}
+              {activeOverlay !== "none" && (
+                <LiveCaptionsOverlay
+                  mode={activeOverlay}
+                  onClose={() => setActiveOverlay("none")}
+                />
+              )}
             </div>
           </div>
         )}
@@ -197,9 +216,6 @@ export function VideoConferenceComponent() {
                   startedBy={codeEditorStartedBy}
                 />
               )}
-              {activeSidebar === "transcription" && (
-                <TranscriptionSidebar onClose={() => setActiveSidebar("none")} />
-              )}
               {activeSidebar === "whiteboard" && (
                 <WhiteboardSidebar onClose={() => setActiveSidebar("none")} />
               )}
@@ -212,6 +228,8 @@ export function VideoConferenceComponent() {
       <CustomControlBar
         activeSidebar={activeSidebar}
         onToggleSidebar={toggleSidebar}
+        activeOverlay={activeOverlay}
+        onToggleOverlay={toggleOverlay}
       />
       <RoomAudioRenderer />
     </div>

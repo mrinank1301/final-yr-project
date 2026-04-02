@@ -1,20 +1,22 @@
 """
-AI Chat WebSocket - Hybrid Realtime Pipeline
+AI Chat WebSocket - Cost-Efficient Chunked Pipeline
 
 AI Assistant mode:
-  Frontend sends continuous PCM16 24kHz audio -> Backend relays to OpenAI
-  Realtime API -> OpenAI handles VAD + STT + LLM -> streamed text tokens
-  flow back to the frontend.
+  Frontend sends 3-second audio chunks (only when speech detected) ->
+  Backend transcribes with Sarvam STT -> TurnAccumulator buffers chunks ->
+  After 2s silence, flushes complete turn -> is_question check ->
+  OpenAI GPT-4o-mini streams response (Groq fallback).
 
 Translation mode:
-  Unchanged chunked Groq Whisper + LLM translate + Azure TTS pipeline.
+  Unchanged chunked Sarvam STT + translate + TTS pipeline.
 
 Text chat:
-  Still uses Groq streaming LLM for typed messages.
+  Uses OpenAI GPT-4o-mini streaming (Groq fallback) for typed messages.
 """
+import asyncio
 import base64
 import time
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from services.ai_service import (
@@ -23,7 +25,6 @@ from services.ai_service import (
     stream_message,
     translate_and_speak,
 )
-from services.realtime_service import RealtimeService
 
 
 def is_similar_text(text1: str, text2: str, threshold: float = 0.7) -> bool:
@@ -43,8 +44,56 @@ def is_similar_text(text1: str, text2: str, threshold: float = 0.7) -> bool:
     return (overlap / total) >= threshold
 
 
+# ---------------------------------------------------------------------------
+# TurnAccumulator - replaces Realtime API server-side VAD turn detection
+# ---------------------------------------------------------------------------
+
+class TurnAccumulator:
+    """
+    Accumulates transcription chunks into complete speaker turns.
+
+    Flow: chunk transcriptions arrive every ~3s -> buffered -> after 2s of
+    no new input the accumulated text is flushed as one complete turn and
+    forwarded to the LLM for a response.  This replaces the Realtime API's
+    server-side VAD which committed a turn after 700ms of silence.
+    """
+    FLUSH_DELAY = 2.0
+
+    def __init__(self):
+        self.buffer: List[str] = []
+        self._flush_task: Optional[asyncio.Task] = None
+        self.on_flush: Optional[Callable[[str], Awaitable[None]]] = None
+
+    def add(self, text: str):
+        self.buffer.append(text)
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+        self._flush_task = asyncio.create_task(self._delayed_flush())
+
+    async def _delayed_flush(self):
+        try:
+            await asyncio.sleep(self.FLUSH_DELAY)
+            if self.buffer and self.on_flush:
+                full_text = " ".join(self.buffer)
+                self.buffer.clear()
+                await self.on_flush(full_text)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[TurnAccumulator] Flush error: {e}")
+
+    def clear(self):
+        self.buffer.clear()
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Connection manager
+# ---------------------------------------------------------------------------
+
 class ChatConnectionManager:
-    """Manages per-client WebSocket state, including the OpenAI Realtime session."""
+    """Manages per-client WebSocket state for all modes."""
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
@@ -52,8 +101,8 @@ class ChatConnectionManager:
         self.meeting_contexts: Dict[str, List[str]] = {}
         self.listening_status: Dict[str, bool] = {}
 
-        # Realtime API session per client (AI Assistant mode)
-        self.realtime_services: Dict[str, RealtimeService] = {}
+        # Turn accumulation (AI Assistant mode)
+        self.turn_accumulators: Dict[str, TurnAccumulator] = {}
 
         # Live Transcription mode
         self.transcription_status: Dict[str, bool] = {}
@@ -74,13 +123,9 @@ class ChatConnectionManager:
         self.last_transcription[client_id] = ""
 
     async def disconnect(self, client_id: str):
-        # Tear down any active Realtime session
-        if client_id in self.realtime_services:
-            try:
-                await self.realtime_services[client_id].disconnect()
-            except Exception:
-                pass
-            del self.realtime_services[client_id]
+        acc = self.turn_accumulators.pop(client_id, None)
+        if acc:
+            acc.clear()
 
         for store in [
             self.active_connections, self.chat_histories,
@@ -137,9 +182,9 @@ async def websocket_ai_chat(websocket: WebSocket, client_id: str):
             elif msg_type == "audio":
                 await _handle_audio(data, client_id, websocket)
 
-            # ---- Continuous PCM audio stream (AI Assistant via Realtime API) ----
-            elif msg_type == "audio_stream":
-                await _handle_audio_stream(data, client_id)
+            # ---- Chunked audio from AI Assistant mode ----
+            elif msg_type == "ai_audio_chunk":
+                await _handle_ai_audio_chunk(data, client_id, websocket)
 
             # ---- Live transcription ----
             elif msg_type == "live_transcription_audio":
@@ -154,23 +199,25 @@ async def websocket_ai_chat(websocket: WebSocket, client_id: str):
             # ================================================================
 
             elif msg_type == "start_listening":
-                # Stop other modes
                 chat_manager.transcription_status[client_id] = False
                 chat_manager.translation_status[client_id] = False
                 chat_manager.listening_status[client_id] = True
+                chat_manager.last_transcription[client_id] = ""
 
-                # Open OpenAI Realtime session
-                await _start_realtime_session(client_id, websocket)
+                accumulator = TurnAccumulator()
+                accumulator.on_flush = lambda text, cid=client_id, ws=websocket: (
+                    _on_turn_complete(cid, ws, text)
+                )
+                chat_manager.turn_accumulators[client_id] = accumulator
 
                 await websocket.send_json({"type": "status", "status": "listening"})
-                print(f"[AI] Client {client_id} started AI assistant (Realtime API)")
+                print(f"[AI] Client {client_id} started AI assistant (chunked pipeline)")
 
             elif msg_type == "stop_listening":
                 chat_manager.listening_status[client_id] = False
-
-                # Tear down Realtime session
-                await _stop_realtime_session(client_id)
-
+                acc = chat_manager.turn_accumulators.pop(client_id, None)
+                if acc:
+                    acc.clear()
                 await websocket.send_json({"type": "status", "status": "stopped"})
                 print(f"[AI] Client {client_id} stopped AI assistant")
 
@@ -213,127 +260,107 @@ async def websocket_ai_chat(websocket: WebSocket, client_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Realtime API session management
+# AI Assistant: chunked audio handler + turn flush callback
 # ---------------------------------------------------------------------------
 
-async def _start_realtime_session(client_id: str, websocket: WebSocket):
-    """Create a RealtimeService and open the OpenAI WebSocket."""
-    # Tear down any existing session first
-    await _stop_realtime_session(client_id)
-
-    async def on_realtime_event(event: dict):
-        """Callback: forward normalised events from OpenAI to the frontend."""
-        try:
-            etype = event.get("type", "")
-
-            if etype == "stream_start":
-                await websocket.send_json({
-                    "type": "stream_start",
-                    "role": "assistant",
-                    "heard": event.get("heard", ""),
-                    "is_question": False,
-                })
-
-            elif etype == "stream_token":
-                await websocket.send_json({
-                    "type": "stream_token",
-                    "token": event.get("token", ""),
-                })
-
-            elif etype == "stream_end":
-                full = event.get("full_content", "")
-                heard = event.get("heard", "")
-                await websocket.send_json({
-                    "type": "stream_end",
-                    "full_content": full,
-                    "heard": heard,
-                    "is_question": is_question(heard) if heard else False,
-                })
-                # Keep history
-                if heard:
-                    chat_manager.add_to_history(client_id, "user", f"[Meeting] {heard}")
-                    chat_manager.add_to_context(client_id, heard)
-                if full:
-                    chat_manager.add_to_history(client_id, "assistant", full)
-
-            elif etype == "heard":
-                await websocket.send_json({
-                    "type": "heard",
-                    "transcript": event.get("transcript", ""),
-                })
-
-            elif etype == "speech_started":
-                await websocket.send_json({
-                    "type": "speech_started",
-                })
-
-            elif etype == "reconnecting":
-                attempt = event.get("attempt", "?")
-                max_att = event.get("max_attempts", "?")
-                await websocket.send_json({
-                    "type": "status",
-                    "status": "reconnecting",
-                    "message": f"Reconnecting to AI... ({attempt}/{max_att})",
-                })
-
-            elif etype == "reconnected":
-                await websocket.send_json({
-                    "type": "status",
-                    "status": "listening",
-                    "message": "Reconnected to AI successfully",
-                })
-
-            elif etype == "error":
-                await websocket.send_json({
-                    "type": "error",
-                    "content": f"Realtime API error: {event.get('error', 'unknown')}",
-                })
-
-        except Exception as e:
-            print(f"[AI] Error forwarding realtime event: {e}")
-
-    service = RealtimeService(on_event=on_realtime_event)
-
-    try:
-        await service.connect()
-        chat_manager.realtime_services[client_id] = service
-        print(f"[AI] Realtime session active for {client_id}")
-    except Exception as e:
-        print(f"[AI] Failed to start realtime session: {e}")
-        await websocket.send_json({
-            "type": "error",
-            "content": f"Failed to connect to OpenAI Realtime API: {e}",
-        })
-
-
-async def _stop_realtime_session(client_id: str):
-    """Disconnect the RealtimeService for this client, if any."""
-    service = chat_manager.realtime_services.pop(client_id, None)
-    if service:
-        await service.disconnect()
-        print(f"[AI] Realtime session closed for {client_id}")
-
-
-# ---------------------------------------------------------------------------
-# Message handlers
-# ---------------------------------------------------------------------------
-
-async def _handle_audio_stream(data: dict, client_id: str):
-    """Relay raw PCM audio from the frontend directly to OpenAI Realtime API."""
+async def _handle_ai_audio_chunk(data: dict, client_id: str, websocket: WebSocket):
+    """
+    Process a 3-second audio chunk from the AI Assistant mode.
+    Pipeline: Sarvam STT -> heard event -> accumulate in TurnAccumulator.
+    The TurnAccumulator flushes complete turns to _on_turn_complete().
+    """
     if not chat_manager.listening_status.get(client_id, False):
         return
 
-    service = chat_manager.realtime_services.get(client_id)
-    if not service or not service.connected:
+    audio_b64 = data.get("data", "")
+    if not audio_b64:
         return
 
-    audio_b64 = data.get("data", "")
-    if audio_b64:
-        await service.send_audio(audio_b64)
+    try:
+        audio_data = base64.b64decode(audio_b64)
+        transcription = await transcribe_audio(audio_data)
 
+        if not transcription or len(transcription.strip()) < 3:
+            return
+
+        last = chat_manager.last_transcription.get(client_id, "")
+        if is_similar_text(transcription, last, threshold=0.8):
+            return
+        chat_manager.last_transcription[client_id] = transcription
+
+        await websocket.send_json({
+            "type": "heard",
+            "transcript": transcription,
+        })
+
+        chat_manager.add_to_context(client_id, transcription)
+
+        acc = chat_manager.turn_accumulators.get(client_id)
+        if acc:
+            acc.add(transcription)
+
+    except Exception as e:
+        print(f"[AI Chunk] Error: {e}")
+
+
+async def _on_turn_complete(client_id: str, websocket: WebSocket, full_turn: str):
+    """
+    Called by TurnAccumulator when a speaker finishes (2s silence).
+    Checks if the accumulated turn is a question/request and streams
+    an OpenAI GPT-4o-mini response if so.
+    """
+    if not chat_manager.listening_status.get(client_id, False):
+        return
+
+    chat_manager.add_to_history(client_id, "user", f"[Meeting] {full_turn}")
+
+    if is_question(full_turn):
+        try:
+            await websocket.send_json({
+                "type": "stream_start",
+                "role": "assistant",
+                "heard": full_turn,
+                "is_question": True,
+            })
+
+            full_response = ""
+            async for token in stream_message(
+                full_turn,
+                chat_manager.chat_histories.get(client_id, []),
+                chat_manager.meeting_contexts.get(client_id, []),
+            ):
+                full_response += token
+                await websocket.send_json({"type": "stream_token", "token": token})
+
+            await websocket.send_json({
+                "type": "stream_end",
+                "full_content": full_response,
+                "heard": full_turn,
+                "is_question": True,
+            })
+
+            if full_response:
+                chat_manager.add_to_history(client_id, "assistant", full_response)
+
+        except Exception as e:
+            print(f"[AI Turn] Error streaming response: {e}")
+            try:
+                await websocket.send_json({
+                    "type": "stream_end",
+                    "full_content": "AI failed to respond. Please try again.",
+                    "heard": full_turn,
+                    "is_question": True,
+                })
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Message handlers (text, mic audio, transcription, translation)
+# ---------------------------------------------------------------------------
 
 async def _handle_text(data: dict, client_id: str, websocket: WebSocket):
-    """Handle typed text message — stream AI response via Groq."""
+    """Handle typed text message — stream AI response."""
     user_message = data.get("content", "")
     if not user_message.strip():
         return
@@ -379,7 +406,7 @@ async def _handle_text(data: dict, client_id: str, websocket: WebSocket):
 
 
 async def _handle_audio(data: dict, client_id: str, websocket: WebSocket):
-    """Handle personal mic audio (user presses mic button) — Groq pipeline."""
+    """Handle personal mic audio (user presses mic button)."""
     audio_base64 = data.get("data", "")
     if not audio_base64:
         return

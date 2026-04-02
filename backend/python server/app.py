@@ -29,7 +29,7 @@ from models import HealthResponse
 from routers import ai_router, code_router
 
 # Import WebSocket handlers
-from websockets import websocket_ai_chat, websocket_yjs_sync
+from websockets import websocket_ai_chat, websocket_yjs_sync, websocket_meeting_transcript
 
 
 # ==================== App Initialization ====================
@@ -74,6 +74,15 @@ async def ai_chat_websocket(websocket: WebSocket, client_id: str):
     - clear: {"type": "clear"} - Clear chat history
     """
     await websocket_ai_chat(websocket, client_id)
+
+
+@app.websocket("/ws/meeting-transcript/{room_id}")
+async def meeting_transcript_websocket(websocket: WebSocket, room_id: str):
+    """
+    Always-on background transcription for meeting summarization.
+    Receives audio chunks, transcribes via Sarvam STT, stores in meeting_storage.
+    """
+    await websocket_meeting_transcript(websocket, room_id)
 
 
 @app.websocket("/ws/yjs/{room_id}")

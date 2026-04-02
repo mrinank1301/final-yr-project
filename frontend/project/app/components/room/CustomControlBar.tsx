@@ -12,6 +12,7 @@ import {
   Code2,
   FileText,
   PenTool,
+  Languages,
 } from "lucide-react";
 import { useState } from "react";
 import { ControlButton } from "./ControlButton";
@@ -19,12 +20,16 @@ import { DeviceMenu } from "./DeviceMenu";
 
 interface CustomControlBarProps {
   activeSidebar: string;
-  onToggleSidebar: (sidebar: "chat" | "participants" | "ai" | "code" | "transcription" | "whiteboard") => void;
+  onToggleSidebar: (sidebar: "chat" | "participants" | "ai" | "code" | "whiteboard") => void;
+  activeOverlay: "none" | "transcription" | "translation";
+  onToggleOverlay: (overlay: "transcription" | "translation") => void;
 }
 
 export function CustomControlBar({
   activeSidebar,
   onToggleSidebar,
+  activeOverlay,
+  onToggleOverlay,
 }: CustomControlBarProps) {
   const { localParticipant } = useLocalParticipant();
   const [isMicOn, setIsMicOn] = useState(true);
@@ -129,12 +134,21 @@ export function CustomControlBar({
         </ControlButton>
 
         <ControlButton
-          onClick={() => onToggleSidebar("transcription")}
-          isActive={activeSidebar === "transcription"}
+          onClick={() => onToggleOverlay("transcription")}
+          isActive={activeOverlay === "transcription"}
           activeClass="bg-amber-500 text-white hover:bg-amber-600"
           inactiveClass="bg-gray-800 text-gray-300 hover:bg-gray-700"
         >
           <FileText className="w-5 h-5" />
+        </ControlButton>
+
+        <ControlButton
+          onClick={() => onToggleOverlay("translation")}
+          isActive={activeOverlay === "translation"}
+          activeClass="bg-blue-500 text-white hover:bg-blue-600"
+          inactiveClass="bg-gray-800 text-gray-300 hover:bg-gray-700"
+        >
+          <Languages className="w-5 h-5" />
         </ControlButton>
 
         <ControlButton
