@@ -203,6 +203,8 @@ LIVEKIT_API_KEY=paste_generated_key
 LIVEKIT_API_SECRET=paste_generated_secret
 
 GROQ_API_KEY=your_groq_key
+OPENAI_API_KEY=your_openai_key
+SARVAM_API_KEY=your_sarvam_key
 GEMINI_API_KEY=your_gemini_key
 AZURE_SPEECH_KEY=your_azure_key
 AZURE_SPEECH_REGION=eastasia
